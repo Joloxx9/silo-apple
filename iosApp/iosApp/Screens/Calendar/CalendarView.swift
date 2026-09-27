@@ -292,47 +292,57 @@ struct CalendarView: View {
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, SiloTheme.largePadding)
 
-            if viewModel.filter != .everything {
-                Button("Show Everything") {
-                    viewModel.select(filter: .everything)
+            // Every view links to the other two, which also gives tvOS
+            // focus a target below the week strip so d-pad down from it
+            // doesn't dead-end (see RecommendationsView's empty state).
+            HStack(spacing: SiloTheme.padding) {
+                ForEach(viewModel.filter.emptyStateLinks) { filter in
+                    Button {
+                        viewModel.select(filter: filter)
+                    } label: {
+                        // Fill the fixed width so iOS 26 glass pills match.
+                        Text(filter.displayLabel)
+                            .frame(maxWidth: .infinity)
+                    }
+                    .siloPrimaryButton()
+                    .frame(width: emptyButtonWidth)
+                    .accessibilityLabel("Show \(filter.displayLabel)")
                 }
-                .siloPrimaryButton()
-                .frame(width: emptyButtonWidth)
-                .padding(.top, SiloTheme.smallPadding)
-            } else {
-                // tvOS focus needs at least one target below the filter
-                // bar so d-pad down from it doesn't dead-end (see
-                // RecommendationsView's empty state).
-                #if os(tvOS)
-                Button("Refresh") {
-                    Task { await viewModel.refresh() }
-                }
-                .buttonStyle(SiloPrimaryButtonStyle())
-                .frame(width: emptyButtonWidth)
-                .padding(.top, SiloTheme.smallPadding)
-                #endif
             }
+            .padding(.top, SiloTheme.smallPadding)
         }
         .frame(maxWidth: .infinity, minHeight: 320)
+        #if os(tvOS)
+        // Full-width section so down from any day in the strip reaches
+        // the centered buttons, not just from the days above them.
+        .focusSection()
+        #endif
     }
 
     private var emptyTitle: String {
-        viewModel.filter == .following
-            ? "Nothing from shows you follow"
-            : "Nothing scheduled this week"
+        switch viewModel.filter {
+        case .following: return "Nothing from shows you follow"
+        case .trending: return "Nothing trending this week"
+        case .everything: return "Nothing scheduled this week"
+        }
     }
 
     private var emptySubtitle: String {
-        viewModel.filter == .following
-            ? "No upcoming releases this week from shows you watch, favorite, or watchlist."
-            : "No movie releases or episode airings in this week."
+        switch viewModel.filter {
+        case .following:
+            return "No upcoming releases this week from shows you watch, favorite, or watchlist."
+        case .trending:
+            return "No trending movie releases or episode airings in this week."
+        case .everything:
+            return "No movie releases or episode airings in this week."
+        }
     }
 
     private var emptyButtonWidth: CGFloat {
         #if os(tvOS)
-        return 360
+        return 300
         #else
-        return 220
+        return 150
         #endif
     }
 
