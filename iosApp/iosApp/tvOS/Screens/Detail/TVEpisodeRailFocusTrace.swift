@@ -111,10 +111,21 @@ final class TVEpisodeRailFocusTrace {
         return "lastMove=\(lastMove.direction < 0 ? "left" : "right") \(ms)ms"
     }
 
+    /// SwiftUI's focus items (`UIKitFocusableViewResponderItem`) have no
+    /// `focusItemContainer`; their `frame` is in the coordinate space of the
+    /// nearest hosting view among their parent focus environments. Window
+    /// coordinates are the screen's on tvOS.
     private static func screenFrame(of item: UIFocusItem) -> CGRect? {
-        guard let container = item.focusItemContainer,
-              let screen = TVFocusSystemProbe.keyWindowScreen else { return nil }
-        return container.coordinateSpace.convert(item.frame, to: screen.coordinateSpace)
+        if let container = item.focusItemContainer {
+            guard let screen = TVFocusSystemProbe.keyWindowScreen else { return nil }
+            return container.coordinateSpace.convert(item.frame, to: screen.coordinateSpace)
+        }
+        var environment = item.parentFocusEnvironment
+        while let current = environment, !(current is UIView) {
+            environment = current.parentFocusEnvironment
+        }
+        guard let view = environment as? UIView, view.window != nil else { return nil }
+        return view.convert(item.frame, to: nil)
     }
 
     private static func geometry(of item: UIFocusItem?) -> String {
