@@ -6,15 +6,17 @@ import UIKit
 ///
 /// One essential line per exit, written to the diagnostics ring that "Send
 /// Diagnostics Now" freezes. It carries the engine's heading, the type and
-/// screen frame of the item that took focus, the carousel's last move and how
-/// long before the exit it ran, and how often the edge fences refused focus
-/// while the carousel held it. Only type names, geometry, and positions are recorded;
-/// breadcrumbs must stay free of library content.
+/// screen frame of the item that took focus, the carousel's last move command
+/// and how long before the exit it ran, and how often the edge fences refused
+/// focus while the carousel held it. Entries into the carousel and every Down
+/// decision (`TVEpisodeRailDownGate`) are logged too. Only type names,
+/// geometry, and positions are recorded; breadcrumbs must stay free of library
+/// content.
 @MainActor
 final class TVEpisodeRailFocusTrace {
     private weak var railItem: UIFocusItem?
     private var isArmed = false
-    private var lastMove: (direction: Int, at: ContinuousClock.Instant)?
+    private var lastMove: (name: String, at: ContinuousClock.Instant)?
     private var fenceRefusals = 0
     private var observer: NSObjectProtocol?
     /// The carousel's frame in global (screen) coordinates.
@@ -54,7 +56,35 @@ final class TVEpisodeRailFocusTrace {
     }
 
     func recordMove(_ direction: Int) {
-        lastMove = (direction, .now)
+        lastMove = (direction < 0 ? "left" : "right", .now)
+    }
+
+    func recordUp() {
+        lastMove = ("up", .now)
+    }
+
+    func recordDown(_ decision: TVEpisodeRailDownGate.Decision) {
+        let message: String
+        let action: String
+        switch decision {
+        case .allowed(let physicalPress):
+            lastMove = ("down", .now)
+            message = "down command handed to the rail below source=\(physicalPress ? "press" : "touch")"
+            action = "down.forwarded"
+        case .ignored(let sinceLateralMove):
+            message = "down command ignored \(Self.milliseconds(sinceLateralMove))ms after a lateral move"
+            action = "down.ignored"
+        }
+        DiagTrace.log(
+            .essential,
+            category: .focus,
+            tag: "EpisodeRail",
+            message: message,
+            attrs: [
+                "target": .string("episodeRail"),
+                "action": .string(action),
+            ]
+        )
     }
 
     func recordFenceRefusal() {
@@ -62,6 +92,9 @@ final class TVEpisodeRailFocusTrace {
     }
 
     private func focusDidUpdate(_ context: UIFocusUpdateContext) {
+        if isInsideRail(context.nextFocusedItem), !isInsideRail(context.previouslyFocusedItem) {
+            logEntry(context)
+        }
         guard isArmed else { return }
         guard let railItem else {
             adoptIfRailItem(context.nextFocusedItem)
@@ -98,17 +131,39 @@ final class TVEpisodeRailFocusTrace {
     }
 
     private func adoptIfRailItem(_ item: UIFocusItem?) {
-        guard let item, !railFrame.isNull,
-              let frame = Self.screenFrame(of: item),
-              railFrame.minY...railFrame.maxY ~= frame.midY else { return }
+        guard isInsideRail(item) else { return }
         railItem = item
+    }
+
+    private func isInsideRail(_ item: UIFocusItem?) -> Bool {
+        guard let item, !railFrame.isNull,
+              let frame = Self.screenFrame(of: item) else { return false }
+        return railFrame.minY...railFrame.maxY ~= frame.midY
+    }
+
+    private func logEntry(_ context: UIFocusUpdateContext) {
+        let heading = Self.name(for: context.focusHeading)
+        let previous = context.previouslyFocusedItem
+        let previousType = previous.map { String(describing: type(of: $0)) } ?? "none"
+        DiagTrace.log(
+            .essential,
+            category: .focus,
+            tag: "EpisodeRail",
+            message: "focus entered episode carousel heading=\(heading) previous=\(previousType) \(Self.geometry(of: previous))",
+            attrs: [
+                "target": .string("episodeRail"),
+                "action": .string("enter.\(heading)"),
+            ]
+        )
     }
 
     private var lastMoveSummary: String {
         guard let lastMove else { return "lastMove=none" }
-        let elapsed = ContinuousClock.now - lastMove.at
-        let ms = elapsed.components.seconds * 1_000 + elapsed.components.attoseconds / 1_000_000_000_000_000
-        return "lastMove=\(lastMove.direction < 0 ? "left" : "right") \(ms)ms"
+        return "lastMove=\(lastMove.name) \(Self.milliseconds(ContinuousClock.now - lastMove.at))ms"
+    }
+
+    private static func milliseconds(_ duration: Duration) -> Int64 {
+        duration.components.seconds * 1_000 + duration.components.attoseconds / 1_000_000_000_000_000
     }
 
     /// SwiftUI's focus items (`UIKitFocusableViewResponderItem`) have no

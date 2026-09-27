@@ -16,6 +16,10 @@ struct TVDetailCastRail: View {
     private let cardSpacing: CGFloat = 60
     private let maxEntries = 24
     @FocusState private var focusedCastId: String?
+    /// Keeps the first-card default inside this rail. Without its own scope the
+    /// `.userInitiated` default joins the page's scope, where an automatic focus
+    /// update could resolve to a card that is off screen.
+    @Namespace private var castFocusScope
 
     var body: some View {
         ScrollView(.horizontal, showsIndicators: false) {
@@ -33,6 +37,7 @@ struct TVDetailCastRail: View {
         }
         .focusSection()
         .applyCastRailDefaultFocus(defaultFocusId, binding: $focusedCastId)
+        .focusScope(castFocusScope)
         .scrollClipDisabled()
         .onChange(of: focusedCastId != nil) { _, focused in
             onFocusChange?(focused)

@@ -3,15 +3,19 @@ import SwiftUI
 import UIKit
 
 /// Observes held arrows while the carousel owns focus. Discrete presses and
-/// touch swipes continue through SwiftUI's onMoveCommand.
+/// touch swipes continue through SwiftUI's onMoveCommand. Also reports
+/// physical Down presses, which tell a deliberate Down from the tail of a
+/// touch-surface swipe (`TVEpisodeRailDownGate`).
 struct TVEpisodeHoldRepeat: UIViewRepresentable {
     var isActive: Bool
     var onMove: (Int) -> Void
+    var onDownPress: () -> Void = {}
 
     func makeUIView(context: Context) -> RepeatView { RepeatView() }
 
     func updateUIView(_ uiView: RepeatView, context: Context) {
         uiView.recognizer.onMove = onMove
+        uiView.recognizer.onDownPress = onDownPress
         uiView.recognizer.isEnabled = isActive
     }
 
@@ -44,11 +48,12 @@ struct TVEpisodeHoldRepeat: UIViewRepresentable {
     /// recognizers from cancelling our observation before the repeat delay.
     final class HeldArrowObserver: UIGestureRecognizer {
         var onMove: (Int) -> Void = { _ in }
+        var onDownPress: () -> Void = {}
         private var repeatTask: Task<Void, Never>?
 
         init() {
             super.init(target: nil, action: nil)
-            allowedPressTypes = [UIPress.PressType.leftArrow, .rightArrow].map { NSNumber(value: $0.rawValue) }
+            allowedPressTypes = [UIPress.PressType.leftArrow, .rightArrow, .downArrow].map { NSNumber(value: $0.rawValue) }
             allowedTouchTypes = []
             cancelsTouchesInView = false
             delaysTouchesBegan = false
@@ -60,6 +65,10 @@ struct TVEpisodeHoldRepeat: UIViewRepresentable {
         override func canBePrevented(by preventingGestureRecognizer: UIGestureRecognizer) -> Bool { false }
 
         override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent) {
+            if presses.contains(where: { $0.type == .downArrow }) {
+                onDownPress()
+                return
+            }
             guard let press = presses.first(where: { $0.type == .leftArrow || $0.type == .rightArrow }) else { return }
             stopRepeating()
             let direction = press.type == .leftArrow ? -1 : 1

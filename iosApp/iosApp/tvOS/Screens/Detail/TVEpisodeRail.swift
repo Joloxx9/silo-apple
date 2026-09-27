@@ -75,6 +75,7 @@ struct TVEpisodeRail: View {
     @State private var appliedScrollRequest = 0
     @State private var scrollViewport = ScrollViewport()
     @State private var focusTrace = TVEpisodeRailFocusTrace()
+    @State private var downGate = TVEpisodeRailDownGate()
 
     /// Own the actual viewport for both card moves and season jumps. Binding a
     /// second SwiftUI ScrollPosition replays its stale point when pages change.
@@ -322,8 +323,12 @@ struct TVEpisodeRail: View {
         .focusScope(anchoredFocusScope)
         .focusSection()
         .background {
-            TVEpisodeHoldRepeat(isActive: railHasFocus, onMove: moveEpisode)
-                .frame(width: 0, height: 0)
+            TVEpisodeHoldRepeat(
+                isActive: railHasFocus,
+                onMove: moveEpisode,
+                onDownPress: { downGate.recordDownPress() }
+            )
+            .frame(width: 0, height: 0)
         }
         .focusable()
         .focused($railHasFocus)
@@ -337,9 +342,13 @@ struct TVEpisodeRail: View {
             switch direction {
             case .up:
                 pendingEdge = nil
+                focusTrace.recordUp()
                 onMoveUp?()
             case .down:
                 pendingEdge = nil
+                let decision = downGate.decideDown()
+                focusTrace.recordDown(decision)
+                guard case .allowed = decision else { return }
                 onMoveDown?()
             case .left: moveEpisode(by: -1)
             case .right: moveEpisode(by: 1)
@@ -450,6 +459,7 @@ struct TVEpisodeRail: View {
     private func moveEpisode(by direction: Int) {
         guard railHasFocus, let episode = anchoredEpisode else { return }
         focusTrace.recordMove(direction)
+        downGate.recordLateralMove()
         let next = anchoredEpisodeIndex + direction
         if episodes.indices.contains(next) {
             pendingEdge = nil
