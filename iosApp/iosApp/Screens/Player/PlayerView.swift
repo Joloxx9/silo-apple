@@ -730,6 +730,7 @@ struct PlayerNextUpScreen: View {
     @FocusState private var focusedTarget: PlayerNextUpFocusTarget?
     @State private var onDeckFocusRequest = 0
     @State private var didRequestInitialActionFocus = false
+    @State private var uiCustomization = UICustomizationPreferences.shared
 
     #if os(tvOS)
     @Namespace private var defaultFocusNamespace
@@ -750,7 +751,7 @@ struct PlayerNextUpScreen: View {
 
                 #if os(tvOS)
                 ScrollView(.vertical, showsIndicators: false) {
-                    screenContent(maxMainWidth: mainContentWidth(for: proxy))
+                    screenContent(columnWidth: contentColumnWidth(for: proxy))
                     .padding(.horizontal, horizontalPadding)
                     .padding(.top, verticalTopPadding)
                     .padding(.bottom, verticalBottomPadding)
@@ -801,15 +802,16 @@ struct PlayerNextUpScreen: View {
         #endif
     }
 
-    private func screenContent(maxMainWidth: CGFloat) -> some View {
+    private func screenContent(columnWidth: CGFloat) -> some View {
         let content = VStack(spacing: sectionSpacing) {
-            mainContent
-                .frame(maxWidth: maxMainWidth)
+            mainContent(columnWidth: columnWidth)
                 .id(playerNextUpMainScrollTarget)
 
             if !viewModel.nextUpCarouselItems.isEmpty {
+                // MediaRow insets its header and cards by the safe padding,
+                // so widen its frame by that inset to share the hero's edges.
                 onDeckSection
-                    .frame(maxWidth: carouselMaxWidth)
+                    .frame(width: columnWidth + SiloTheme.safePadding * 2)
                     .id(playerNextUpOnDeckScrollTarget)
             }
         }
@@ -836,14 +838,18 @@ struct PlayerNextUpScreen: View {
     }
 
     @ViewBuilder
-    private var mainContent: some View {
+    private func mainContent(columnWidth: CGFloat) -> some View {
         #if os(tvOS)
-        HStack(alignment: .center, spacing: 48) {
+        // Split the column on the On Deck card grid: the preview spans the
+        // first two cards and the panel starts at the third.
+        let previewWidth = onDeckCardWidth * 2 + tvCardSpacing
+        HStack(alignment: .center, spacing: tvCardSpacing) {
             miniPlayerPane
-                .frame(width: 680)
+                .frame(width: previewWidth)
             nextUpPanel
-                .frame(maxWidth: 650, alignment: .leading)
+                .frame(width: columnWidth - previewWidth - tvCardSpacing, alignment: .leading)
         }
+        .frame(width: columnWidth)
         #else
         EmptyView()
         #endif
@@ -1264,8 +1270,19 @@ struct PlayerNextUpScreen: View {
             .formatted(.units(allowed: [.hours, .minutes], width: .abbreviated))
     }
 
-    private func mainContentWidth(for proxy: GeometryProxy) -> CGFloat {
-        min(proxy.size.width - horizontalPadding * 2, isTV ? 1420 : 680)
+    /// One centered column shared by the hero and On Deck, as wide as four
+    /// On Deck cards so a full row fills it edge to edge. The cap leaves room
+    /// for MediaRow's inset; Large cards are too wide for four to fit, so the
+    /// fourth card runs past the column like any other rail.
+    private func contentColumnWidth(for proxy: GeometryProxy) -> CGFloat {
+        let fourCards = onDeckCardWidth * 4 + tvCardSpacing * 3
+        let available = proxy.size.width - (horizontalPadding + SiloTheme.safePadding) * 2
+        return min(available, fourCards)
+    }
+
+    /// Matches EpisodeThumbCard, which scales with the Poster Size setting.
+    private var onDeckCardWidth: CGFloat {
+        SiloTheme.thumbnailCardWidth * uiCustomization.cardPresentation.posterSize.scale
     }
 
     private var isTV: Bool {
@@ -1276,7 +1293,8 @@ struct PlayerNextUpScreen: View {
         #endif
     }
 
-    private var carouselMaxWidth: CGFloat { isTV ? 1580 : 680 }
+    /// Matches MediaRow's tvOS card spacing.
+    private let tvCardSpacing: CGFloat = 40
     private var horizontalPadding: CGFloat { isTV ? 80 : 24 }
     private var verticalTopPadding: CGFloat { isTV ? 112 : 24 }
     private var verticalBottomPadding: CGFloat { isTV ? 260 : 24 }
