@@ -1155,6 +1155,7 @@ private struct SubtitleAppearanceDialog: View {
         case font
         case size
         case textColor
+        case textOpacity
         case outlineToggle
         case outlineColor
         case backgroundColor
@@ -1277,6 +1278,24 @@ private struct SubtitleAppearanceDialog: View {
                         }
                         .focused($focusedField, equals: .textColor)
                         .id(Field.textColor)
+
+                        HUDSettingRow(label: "Text Opacity", value: textOpacityLabel) {
+                            presentPicker(
+                                for: .textOpacity,
+                                HUDPickerPresentation(
+                                    title: "Text Opacity",
+                                    options: Self.textOpacityOptions,
+                                    selection: String(viewModel.settings.subtitleAppearance.textOpacity),
+                                    onSelect: { value in
+                                        if let opacity = Int(value) {
+                                            updateAppearance { $0.textOpacity = opacity }
+                                        }
+                                    }
+                                )
+                            )
+                        }
+                        .focused($focusedField, equals: .textOpacity)
+                        .id(Field.textOpacity)
 
                         HUDToggleRow(
                             label: "Text outline",
@@ -1461,6 +1480,10 @@ private struct SubtitleAppearanceDialog: View {
         return "\(viewModel.settings.subtitleAppearance.backgroundOpacity)%"
     }
 
+    private var textOpacityLabel: String {
+        "\(viewModel.settings.subtitleAppearance.textOpacity)%"
+    }
+
     private func label(for id: String, in options: [HUDDropdownOption]) -> String {
         options.first { $0.id.caseInsensitiveCompare(id) == .orderedSame }?.label ?? id
     }
@@ -1479,6 +1502,9 @@ private struct SubtitleAppearanceDialog: View {
 
     private static let opacityOptions: [HUDDropdownOption] =
         stride(from: 0, through: 100, by: 25).map { .init(id: String($0), label: $0 == 0 ? "Off" : "\($0)%") }
+
+    private static let textOpacityOptions: [HUDDropdownOption] =
+        stride(from: 25, through: 100, by: 25).map { .init(id: String($0), label: "\($0)%") }
 
     private static let fontColorOptions: [HUDDropdownOption] =
         SubtitleAppearance.fontColors.map { .init(id: $0.hex, label: $0.label, colorHex: $0.hex) }

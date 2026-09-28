@@ -47,6 +47,12 @@ extension SettingKey {
         case .playerVideoSkipBackSeconds, .playerVideoSkipForwardSeconds,
              .playerAudiobookSkipBackSeconds, .playerAudiobookSkipForwardSeconds:
             return 9
+        case .catalogShowAdvisoryAge:
+            return 10
+        case .uiThemeMusicEnabled, .uiThemeMusicLoop:
+            return 11
+        case .homeHideWatchedItems:
+            return 12
         case .catalogMetadataLanguage, .downloadsDefaultQuality, .downloadsKeepWatched,
              .downloadsWifiOnly, .navShowAudiobooks, .playbackAudioLanguage,
              .playbackAutoPlayNext, .playbackAutoPlayNextPreview, .playbackAutoSkipCredits,

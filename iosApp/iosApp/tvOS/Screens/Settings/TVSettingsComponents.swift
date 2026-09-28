@@ -124,6 +124,9 @@ enum TVSettingsOptions {
     static let backgroundOpacity: [TVSettingsOption] =
         stride(from: 0, through: 100, by: 5).map { .init(id: String($0), label: "\($0)%") }
 
+    static let textOpacity: [TVSettingsOption] =
+        stride(from: 5, through: 100, by: 5).map { .init(id: String($0), label: "\($0)%") }
+
     static let backgroundColor: [TVSettingsOption] =
         SubtitleAppearance.backgroundColors.map { .init(id: $0.hex, label: $0.label) }
 

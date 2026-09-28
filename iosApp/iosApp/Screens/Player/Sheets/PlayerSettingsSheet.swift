@@ -70,9 +70,6 @@ struct PlayerSettingsSheet: View {
 
     #if os(iOS)
     @Environment(\.dismiss) private var dismiss
-    /// Slider position while the user is dragging the background-opacity
-    /// slider; committed (and saved) once the drag ends.
-    @State private var draftOpacity: Double?
     #endif
 
     var body: some View {
@@ -231,7 +228,7 @@ struct PlayerSettingsSheet: View {
                     .listRowInsets(EdgeInsets())
             } footer: {
                 if !matchesSystem && viewModel.settings.subtitleAppearance.isLowLegibilityRisk {
-                    Text("Low contrast — dark text without a box or outline can be hard to read.")
+                    Text("Low legibility — very transparent or dark text without a box or outline can be hard to read.")
                 }
             }
 
@@ -276,6 +273,8 @@ struct PlayerSettingsSheet: View {
                         Text(color.label).tag(color.hex)
                     }
                 }
+
+                textOpacityRow
 
                 Toggle("Text outline", isOn: appearanceBoolBinding(\.textOutline))
                     .tint(.siloAccent)
@@ -322,34 +321,31 @@ struct PlayerSettingsSheet: View {
     }
 
     private var appearanceOpacityRow: some View {
-        let committed = Double(viewModel.settings.subtitleAppearance.backgroundOpacity)
-        return HStack(spacing: 12) {
-            Text("Opacity")
-            Slider(
-                value: Binding(
-                    get: { draftOpacity ?? committed },
-                    set: { draftOpacity = $0 }
-                ),
-                in: 0...100,
-                step: 5
-            ) { editing in
-                guard !editing, let value = draftOpacity else { return }
-                draftOpacity = nil
-                var next = viewModel.settings.subtitleAppearance
-                let percent = Int(value)
-                if next.backgroundOpacity == percent { return }
-                next.backgroundOpacity = percent
-                Task { await viewModel.setSubtitleAppearance(next) }
-            }
-            .tint(.siloAccent)
-            Text("\(Int(draftOpacity ?? committed))%")
-                .monospacedDigit()
-                .foregroundStyle(.secondary)
-                .frame(minWidth: 44, alignment: .trailing)
+        PercentField(
+            label: "Opacity",
+            accessibilityLabelText: "Background Opacity",
+            min: 0,
+            value: viewModel.settings.subtitleAppearance.backgroundOpacity
+        ) { newValue in
+            var next = viewModel.settings.subtitleAppearance
+            if next.backgroundOpacity == newValue { return }
+            next.backgroundOpacity = newValue
+            Task { await viewModel.setSubtitleAppearance(next) }
         }
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("Background Opacity")
-        .accessibilityValue("\(Int(draftOpacity ?? committed)) percent")
+    }
+
+    private var textOpacityRow: some View {
+        PercentField(
+            label: "Opacity",
+            accessibilityLabelText: "Text Opacity",
+            min: 1,
+            value: viewModel.settings.subtitleAppearance.textOpacity
+        ) { newValue in
+            var next = viewModel.settings.subtitleAppearance
+            if next.textOpacity == newValue { return }
+            next.textOpacity = newValue
+            Task { await viewModel.setSubtitleAppearance(next) }
+        }
     }
 
     /// Speed ladder for the sheet's picker. Mirrors the ladder the old
@@ -651,6 +647,12 @@ struct PlayerSettingsSheet: View {
                         Picker("Font color", selection: appearanceStringBinding(\.fontColor)) {
                             ForEach(SubtitleAppearance.fontColors, id: \.hex) { color in
                                 Text(color.label).tag(color.hex)
+                            }
+                        }
+
+                        Picker("Text opacity", selection: appearanceIntBinding(\.textOpacity)) {
+                            ForEach(Array(stride(from: 5, through: 100, by: 5)), id: \.self) { value in
+                                Text("\(value)%").tag(String(value))
                             }
                         }
 

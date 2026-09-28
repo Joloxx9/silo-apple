@@ -107,7 +107,7 @@ struct TVSubtitleSettingsPane: View {
 
         if !viewModel.subtitleMatchesSystemAppearance
             && viewModel.subtitleAppearance.isLowLegibilityRisk {
-            TVSettingsFooter("Low contrast — dark text without a box or outline can be hard to read.")
+            TVSettingsFooter("Low legibility — very transparent or dark text without a box or outline can be hard to read.")
         }
 
         TVSettingsToggleRow(
@@ -135,6 +135,15 @@ struct TVSubtitleSettingsPane: View {
                       selection: viewModel.subtitleAppearance.fontFamily.rawValue, kind: .fontFamily)
             pickerRow("Font Color", options: TVSettingsOptions.fontColor,
                       selection: viewModel.subtitleAppearance.fontColor.lowercased(), kind: .fontColor)
+
+            TVSettingsPickerRow(
+                title: "Text Opacity",
+                value: "\(viewModel.subtitleAppearance.textOpacity)%"
+            ) {
+                guard viewModel.subtitleUsesDeviceAppearanceOverride else { return }
+                showPicker(.textOpacity)
+            }
+            .focused(detailFocus, equals: .subtitleTextOpacity)
 
             TVSettingsToggleRow(
                 title: "Text Outline",
@@ -312,6 +321,14 @@ struct TVSubtitleSettingsPane: View {
                 selection: appearanceStringBinding(\.fontColor),
                 returnFocus: kind.returnFocus
             )
+        case .textOpacity:
+            TVSettingsPickerRequest(
+                id: kind.id,
+                title: "Text Opacity",
+                options: TVSettingsOptions.textOpacity,
+                selection: textOpacityBinding,
+                returnFocus: kind.returnFocus
+            )
         case .outlineColor:
             TVSettingsPickerRequest(
                 id: kind.id,
@@ -362,6 +379,7 @@ struct TVSubtitleSettingsPane: View {
         case fontSize
         case fontFamily
         case fontColor
+        case textOpacity
         case outlineColor
         case backgroundStyle
         case backgroundOpacity
@@ -378,6 +396,7 @@ struct TVSubtitleSettingsPane: View {
             case .fontSize: .subtitleFontSize
             case .fontFamily: .subtitleFontFamily
             case .fontColor: .subtitleFontColor
+            case .textOpacity: .subtitleTextOpacity
             case .outlineColor: .subtitleOutlineColor
             case .backgroundStyle: .subtitleBackgroundStyle
             case .backgroundOpacity: .subtitleBackgroundOpacity
@@ -416,6 +435,18 @@ struct TVSubtitleSettingsPane: View {
                 if style == .box && next.backgroundOpacity == 0 {
                     next.backgroundOpacity = SubtitleAppearance.default.backgroundOpacity
                 }
+                Task { await viewModel.setSubtitleAppearance(next) }
+            }
+        )
+    }
+
+    private var textOpacityBinding: Binding<String> {
+        Binding(
+            get: { String(viewModel.subtitleAppearance.textOpacity) },
+            set: { value in
+                guard let opacity = Int(value) else { return }
+                var next = viewModel.subtitleAppearance
+                next.textOpacity = opacity
                 Task { await viewModel.setSubtitleAppearance(next) }
             }
         )
