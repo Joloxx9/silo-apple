@@ -669,6 +669,15 @@ final class PlayerSettings {
     @discardableResult
     @MainActor
     func refreshFromServer() async -> RefreshResult {
+        // This instance survives server and profile switches, so a revision
+        // confirmed for the previous scope must not leak into the next one:
+        // clearing it first means a failed or pending refresh for a new
+        // (possibly older) server falls back to the conservative "unknown"
+        // gate rather than reusing a stale, too-permissive value — including
+        // for the pending-writes flush just below, which runs before this
+        // scope's own revision is confirmed.
+        knownManifestRevision = nil
+
         // Capture the pre-contract values before applying the normalized cache
         // for this scope. That normalization intentionally turns a compound
         // legacy quality id into a bare resolution and would otherwise erase

@@ -1168,6 +1168,39 @@ final class PlayerSettingsFlushTests: XCTestCase {
         XCTAssertEqual(harness.settings.subtitleAppearance.textOpacity, 42)
     }
 
+    /// `PlayerSettings.shared` survives server and profile switches. A
+    /// revision confirmed for the previous scope must not leak into the next
+    /// one: if that scope's own refresh fails (or hasn't completed), the
+    /// remembered revision has to fall back to "unknown" rather than reuse a
+    /// stale, too-permissive value from a different server.
+    func testKnownRevisionDoesNotSurviveAFailedRefreshAfterAScopeSwitch() async throws {
+        let harness = try PlayerSettingsHarness()
+        harness.transport.revision = 13
+        await harness.settings.refreshFromServer()
+
+        // Confirms the setup: a known revision-13 server sends textOpacity.
+        var appearance = SubtitleAppearance.default
+        appearance.textOpacity = 55
+        await harness.settings.setSubtitleAppearance(appearance)
+        guard case .object(let firstFields) = harness.transport.writesByKey()[.playbackSubtitleAppearance]?.value else {
+            return XCTFail("expected an object write for subtitle appearance")
+        }
+        XCTAssertEqual(firstFields["textOpacity"], .int(55))
+
+        // Simulates switching to a different (possibly older) server or
+        // profile whose refresh fails before confirming its own revision.
+        harness.transport.effectiveError = .transport(description: "offline")
+        await harness.settings.refreshFromServer()
+        harness.transport.effectiveError = nil
+
+        appearance.textOpacity = 77
+        await harness.settings.setSubtitleAppearance(appearance)
+        guard case .object(let secondFields) = harness.transport.writesByKey()[.playbackSubtitleAppearance]?.value else {
+            return XCTFail("expected an object write for subtitle appearance")
+        }
+        XCTAssertNil(secondFields["textOpacity"], "the prior scope's revision must not carry over")
+    }
+
     func testNoAudioLanguagePreferenceIsSentAsJSONNull() async throws {
         let harness = try PlayerSettingsHarness()
 
