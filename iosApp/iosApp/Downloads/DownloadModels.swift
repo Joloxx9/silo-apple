@@ -14,6 +14,8 @@ struct DownloadCapability: Codable, Hashable, Sendable {
     let enabled: Bool
     let downloadAllowed: Bool
     let qualityPresets: [String]
+    /// Each preset's bitrate cap and resolution ceiling, for labels.
+    let qualityOptions: [DownloadQualityOption]
     let transcodeEnabled: Bool
     let transcodeUserAllowed: Bool
     let seasonDownload: Bool
@@ -24,12 +26,19 @@ struct DownloadCapability: Codable, Hashable, Sendable {
     /// principal may use it.
     var isUsable: Bool { state == "available" && allowed && enabled && downloadAllowed }
 
+    /// The label for a preset, with the server's resolution ceiling when it
+    /// reports one: "10 Mbps · up to 1080p".
+    func label(for format: DownloadFormat) -> String {
+        format.label(maxHeight: qualityOptions.first { $0.preset == format.rawValue }?.maxHeight)
+    }
+
     private enum CodingKeys: String, CodingKey {
         case state
         case allowed
         case enabled
         case downloadAllowed
         case qualityPresets
+        case qualityOptions
         case transcodeEnabled
         case transcodeUserAllowed
         case seasonDownload
@@ -43,6 +52,9 @@ struct DownloadCapability: Codable, Hashable, Sendable {
         enabled = wire.enabled
         downloadAllowed = wire.downloadAllowed
         qualityPresets = wire.qualityPresets
+        qualityOptions = (wire.qualityOptions ?? []).map {
+            DownloadQualityOption(preset: $0.preset, bitrateKbps: $0.bitrateKbps, maxHeight: $0.maxHeight)
+        }
         transcodeEnabled = wire.transcodeEnabled
         transcodeUserAllowed = wire.transcodeUserAllowed
         seasonDownload = wire.seasonDownload
@@ -59,12 +71,21 @@ struct DownloadCapability: Codable, Hashable, Sendable {
         enabled = try container.decode(Bool.self, forKey: .enabled)
         downloadAllowed = try container.decode(Bool.self, forKey: .downloadAllowed)
         qualityPresets = try container.decode([String].self, forKey: .qualityPresets)
+        qualityOptions = try container.decodeIfPresent([DownloadQualityOption].self, forKey: .qualityOptions) ?? []
         transcodeEnabled = try container.decode(Bool.self, forKey: .transcodeEnabled)
         transcodeUserAllowed = try container.decode(Bool.self, forKey: .transcodeUserAllowed)
         seasonDownload = try container.decode(Bool.self, forKey: .seasonDownload)
         seriesMonitoring = try container.decode(Bool.self, forKey: .seriesMonitoring)
         monitoringModes = try container.decode([String].self, forKey: .monitoringModes)
     }
+}
+
+/// One quality preset as the server describes it: the video bitrate cap and
+/// the tallest output the preset can produce. Both are nil for `original`.
+struct DownloadQualityOption: Codable, Hashable, Sendable {
+    let preset: String
+    let bitrateKbps: Int?
+    let maxHeight: Int?
 }
 
 /// Public quality presets offered for a managed download. Only values that
@@ -86,6 +107,15 @@ enum DownloadFormat: String, Codable, CaseIterable, Sendable {
         case .twoMbps: return "2 Mbps"
         case .oneMbps: return "1 Mbps"
         }
+    }
+
+    /// The display name plus the resolution ceiling the server reports for
+    /// this preset, e.g. "20 Mbps · up to 4K". A missing ceiling (original,
+    /// or an older server) leaves the bitrate-only name.
+    func label(maxHeight: Int?) -> String {
+        guard let maxHeight, maxHeight > 0 else { return displayName }
+        let resolution = maxHeight >= 2160 ? "4K" : "\(maxHeight)p"
+        return "\(displayName) · up to \(resolution)"
     }
 }
 
@@ -198,6 +228,15 @@ struct OfflineManifest: Codable, Hashable, Sendable {
     /// Compatibility alias for code paths and saved manifests that used
     /// the former public `format` name.
     var format: String { quality }
+
+    /// Whether the downloaded file is the server's remux/transcode output
+    /// rather than the original source file.
+    var isServerPreparedFile: Bool {
+        guard let delivery = deliveryFormat?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased(), !delivery.isEmpty else { return false }
+        return delivery != "original"
+    }
 
     private enum CodingKeys: String, CodingKey {
         case downloadId
@@ -386,6 +425,7 @@ struct OfflineAudioTrack: Codable, Hashable, Sendable {
 /// origin (`external:{index}` or `downloaded:{id}`).
 struct OfflineSubtitle: Codable, Hashable, Sendable {
     let language: String?
+    let title: String?
     let format: String?
     let forced: Bool?
     let hearingImpaired: Bool?

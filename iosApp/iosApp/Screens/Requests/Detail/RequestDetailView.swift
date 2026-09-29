@@ -33,6 +33,8 @@ struct RequestDetailView: View {
         .task(id: viewModel.tmdbId) {
             await viewModel.load()
         }
+        .sensoryFeedback(.success, trigger: viewModel.submittedCount)
+        .sensoryFeedback(.error, trigger: viewModel.actionErrorMessage) { _, message in message != nil }
         .onChange(of: RequestsEventBus.shared.lastUpdate) { _, update in
             if let update {
                 viewModel.applyRequestUpdate(update)
@@ -311,19 +313,7 @@ struct RequestDetailView: View {
         case .request: viewModel.mediaType == .series ? "Request Series" : "Request Movie"
         case .submitting: "Requesting…"
         case .openInLibrary: "In Your Library · Open"
-        case .status(let state): statusTitle(state)
-        }
-    }
-
-    private func statusTitle(_ state: RequestDisplayState) -> String {
-        switch state {
-        case .pending: "Requested · Pending"
-        case .onTheWay: "On the way"
-        case .inLibrary: "In your library"
-        case .needsAttention(let reason):
-            RequestErrorCopy.message(forToken: reason).map { "Declined · \($0)" } ?? "Needs attention"
-        case .unavailable(let reason):
-            RequestErrorCopy.message(forToken: reason) ?? "Unavailable"
+        case .status(let state): state.detailTitle
         }
     }
 
