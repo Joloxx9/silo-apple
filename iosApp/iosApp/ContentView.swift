@@ -390,6 +390,7 @@ struct ContentView: View {
             switch newPhase {
             case .active:
                 siloControl.appDidBecomeActive()
+                DownloadManager.shared.sceneDidBecomeActive()
             case .background:
                 siloControl.appDidEnterBackground()
                 // Keep series monitoring alive while backgrounded; only
@@ -2675,8 +2676,8 @@ struct MainTabView: View {
         .scrollBounceBehavior(.basedOnSize)
         #if os(iOS)
         // The shell's near-white tint would fill the selected row under the
-        // system's white text. Use the app accent and let iPadOS pick colors.
-        .tint(Color("AccentColor"))
+        // system's white text, so the selected row gets a graphite fill.
+        .tint(Color.siloIconTile)
         #endif
     }
 

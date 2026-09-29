@@ -10,14 +10,6 @@ struct SubtitleSettingsView: View {
 
     var body: some View {
         List {
-            SettingsPageHeader(
-                title: "Subtitles",
-                subtitle: "Language, behavior, and on-screen appearance.",
-                systemImage: "captions.bubble.fill",
-                tint: .pink
-            )
-            .settingsPageHeaderRow()
-
             profileBackedSection
             if AICapabilities.shared.metadataEnabled {
                 metadataLanguageSection
@@ -31,7 +23,7 @@ struct SubtitleSettingsView: View {
             appearanceSection
         }
         .settingsListChrome()
-        .navigationTitle("")
+        .navigationTitle("Subtitles")
         .siloNavigationTitleDisplayMode(.inline)
         .siloToolbarColorSchemeDark()
         .onChange(of: viewModel.prefs.subtitleLanguage) { _, _ in
@@ -77,7 +69,7 @@ struct SubtitleSettingsView: View {
                 .foregroundStyle(Color.siloSecondaryText)
         }
         .disabled(viewModel.prefs.serverUpgradeRequired)
-        .listRowBackground(Color.siloSurfaceElevated)
+        .listRowBackground(Color.siloGroupedCell)
     }
 
     // MARK: - Profile prefs (server-backed)
@@ -122,7 +114,7 @@ struct SubtitleSettingsView: View {
                 )
             )
             .foregroundStyle(Color.siloOnSurface)
-            .tint(.siloAccent)
+            .tint(.siloSwitchOn)
         } header: {
             Text("Profile")
                 .foregroundStyle(Color.siloSecondaryText)
@@ -148,7 +140,7 @@ struct SubtitleSettingsView: View {
             .foregroundStyle(Color.siloSecondaryText)
         }
         .disabled(viewModel.prefs.serverUpgradeRequired || viewModel.subtitleMatchesSystemAppearance)
-        .listRowBackground(Color.siloSurfaceElevated)
+        .listRowBackground(Color.siloGroupedCell)
     }
 
     // MARK: - Appearance (per-device override)
@@ -171,7 +163,7 @@ struct SubtitleSettingsView: View {
                     .foregroundStyle(Color.siloError)
             }
         }
-        .listRowBackground(Color.siloSurfaceElevated)
+        .listRowBackground(Color.siloGroupedCell)
 
         Section {
             Toggle(
@@ -184,7 +176,7 @@ struct SubtitleSettingsView: View {
                 )
             )
             .foregroundStyle(Color.siloOnSurface)
-            .tint(.siloAccent)
+            .tint(.siloSwitchOn)
 
             Toggle(
                 "Custom Appearance",
@@ -196,7 +188,7 @@ struct SubtitleSettingsView: View {
                 )
             )
             .foregroundStyle(Color.siloOnSurface)
-            .tint(.siloAccent)
+            .tint(.siloSwitchOn)
             .disabled(manualEditingDisabled)
         } footer: {
             VStack(alignment: .leading, spacing: 6) {
@@ -215,7 +207,7 @@ struct SubtitleSettingsView: View {
             }
             .foregroundStyle(Color.siloSecondaryText)
         }
-        .listRowBackground(Color.siloSurfaceElevated)
+        .listRowBackground(Color.siloGroupedCell)
 
         Section {
             Picker("Font Size", selection: appearanceBinding(\.fontSize)) {
@@ -263,7 +255,7 @@ struct SubtitleSettingsView: View {
 
             Toggle("Text Outline", isOn: appearanceBinding(\.textOutline))
                 .foregroundStyle(Color.siloOnSurface)
-                .tint(.siloAccent)
+                .tint(.siloSwitchOn)
 
             ColorChoicePicker(
                 title: "Outline Color",
@@ -276,7 +268,7 @@ struct SubtitleSettingsView: View {
             Text("Text")
                 .foregroundStyle(Color.siloSecondaryText)
         }
-        .listRowBackground(Color.siloSurfaceElevated)
+        .listRowBackground(Color.siloGroupedCell)
         .disabled(manualEditingDisabled)
         .opacity(manualEditingDisabled ? 0.45 : 1)
 
@@ -308,7 +300,7 @@ struct SubtitleSettingsView: View {
             Text("Background")
                 .foregroundStyle(Color.siloSecondaryText)
         }
-        .listRowBackground(Color.siloSurfaceElevated)
+        .listRowBackground(Color.siloGroupedCell)
         .disabled(manualEditingDisabled)
         .opacity(manualEditingDisabled ? 0.45 : 1)
 
@@ -328,7 +320,7 @@ struct SubtitleSettingsView: View {
             Text("Layout")
                 .foregroundStyle(Color.siloSecondaryText)
         }
-        .listRowBackground(Color.siloSurfaceElevated)
+        .listRowBackground(Color.siloGroupedCell)
         .disabled(manualEditingDisabled)
         .opacity(manualEditingDisabled ? 0.45 : 1)
     }
