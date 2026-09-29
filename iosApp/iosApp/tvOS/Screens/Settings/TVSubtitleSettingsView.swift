@@ -325,7 +325,7 @@ struct TVSubtitleSettingsPane: View {
             TVSettingsPickerRequest(
                 id: kind.id,
                 title: "Text Opacity",
-                options: TVSettingsOptions.textOpacity,
+                options: TVSettingsOptions.textOpacity(current: viewModel.subtitleAppearance.textOpacity),
                 selection: textOpacityBinding,
                 returnFocus: kind.returnFocus
             )
@@ -349,7 +349,7 @@ struct TVSubtitleSettingsPane: View {
             TVSettingsPickerRequest(
                 id: kind.id,
                 title: "Background Opacity",
-                options: TVSettingsOptions.backgroundOpacity,
+                options: TVSettingsOptions.backgroundOpacity(current: viewModel.subtitleAppearance.backgroundOpacity),
                 selection: backgroundOpacityBinding,
                 returnFocus: kind.returnFocus
             )

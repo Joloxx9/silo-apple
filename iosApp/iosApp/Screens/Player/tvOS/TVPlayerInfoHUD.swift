@@ -1284,7 +1284,10 @@ private struct SubtitleAppearanceDialog: View {
                                 for: .textOpacity,
                                 HUDPickerPresentation(
                                     title: "Text Opacity",
-                                    options: Self.textOpacityOptions,
+                                    options: Self.opacityOptions(
+                                        current: viewModel.settings.subtitleAppearance.textOpacity,
+                                        floor: 1
+                                    ),
                                     selection: String(viewModel.settings.subtitleAppearance.textOpacity),
                                     onSelect: { value in
                                         if let opacity = Int(value) {
@@ -1370,7 +1373,10 @@ private struct SubtitleAppearanceDialog: View {
                                 for: .opacity,
                                 HUDPickerPresentation(
                                     title: "Background Opacity",
-                                    options: Self.opacityOptions,
+                                    options: Self.opacityOptions(
+                                        current: viewModel.settings.subtitleAppearance.backgroundOpacity,
+                                        floor: 0
+                                    ),
                                     selection: String(viewModel.settings.subtitleAppearance.backgroundOpacity),
                                     onSelect: { value in
                                         if let opacity = Int(value) {
@@ -1500,11 +1506,17 @@ private struct SubtitleAppearanceDialog: View {
     private static let positionOptions: [HUDDropdownOption] =
         SubtitlePositionPreset.allCases.map { .init(id: $0.rawValue, label: $0.label) }
 
-    private static let opacityOptions: [HUDDropdownOption] =
-        stride(from: 0, through: 100, by: 25).map { .init(id: String($0), label: $0 == 0 ? "Off" : "\($0)%") }
-
-    private static let textOpacityOptions: [HUDDropdownOption] =
-        stride(from: 25, through: 100, by: 25).map { .init(id: String($0), label: "\($0)%") }
+    /// A value synced from another client (the iOS/macOS free-typed percent
+    /// field) can land off this picker's 25-point cadence. Without the
+    /// current value folded in, the picker shows no selection, focus lands on
+    /// the first option, and pressing Select silently overwrites the real
+    /// value with it.
+    private static func opacityOptions(current: Int, floor: Int) -> [HUDDropdownOption] {
+        (Array(stride(from: floor, through: 100, by: 25)) + [current])
+            .sorted()
+            .reduce(into: [Int]()) { acc, value in if acc.last != value { acc.append(value) } }
+            .map { .init(id: String($0), label: $0 == 0 ? "Off" : "\($0)%") }
+    }
 
     private static let fontColorOptions: [HUDDropdownOption] =
         SubtitleAppearance.fontColors.map { .init(id: $0.hex, label: $0.label, colorHex: $0.hex) }

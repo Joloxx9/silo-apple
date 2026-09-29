@@ -1092,6 +1092,11 @@ final class PlayerSettingsFlushTests: XCTestCase {
 
     func testSettersEncodeEachKeyAsItsContractType() async throws {
         let harness = try PlayerSettingsHarness()
+        // Confirms the fake transport's current-revision server before editing,
+        // matching a real session (refreshFromServer always runs before the
+        // settings screen is reachable) — otherwise textOpacity is held back
+        // from the subtitle-appearance write until a revision is confirmed.
+        await harness.settings.refreshFromServer()
 
         harness.settings.setPreferredQuality("1080p-medium")
         harness.settings.setAudioLanguage("ja")
@@ -1134,6 +1139,33 @@ final class PlayerSettingsFlushTests: XCTestCase {
         XCTAssertEqual(byKey[.playerSubtitleSyncMs]?.value, .int(-350))
         XCTAssertEqual(byKey[.playerVideoGravity]?.value, .string("fill"))
         XCTAssertEqual(byKey[.playerOrientationMode]?.value, .string("rotateFreely"))
+    }
+
+    /// `textOpacity` was added to `playback.subtitle_appearance`'s schema at
+    /// manifest revision 13, but the key itself has been servable since
+    /// revision 1 — a server between those, or one this session hasn't
+    /// confirmed yet, has a schema validator that rejects the whole write for
+    /// the one unknown member. The field must come out of the wire payload
+    /// rather than fail every subtitle-appearance edit outright.
+    func testTextOpacityIsHeldBackFromAnUnconfirmedOrOlderServer() async throws {
+        let harness = try PlayerSettingsHarness()
+        harness.transport.revision = 12
+        await harness.settings.refreshFromServer()
+
+        var appearance = SubtitleAppearance.default
+        appearance.fontSize = .xlarge
+        appearance.textOpacity = 42
+        await harness.settings.setSubtitleAppearance(appearance)
+
+        let write = harness.transport.writesByKey()[.playbackSubtitleAppearance]
+        guard case .object(let fields) = write?.value else {
+            return XCTFail("expected an object write for subtitle appearance")
+        }
+        XCTAssertNil(fields["textOpacity"], "an unconfirmed/older server must not receive textOpacity")
+        // Every other member still writes normally.
+        XCTAssertEqual(fields["fontSize"], .string("xlarge"))
+        // The chosen value still applies locally; only the wire payload held it back.
+        XCTAssertEqual(harness.settings.subtitleAppearance.textOpacity, 42)
     }
 
     func testNoAudioLanguagePreferenceIsSentAsJSONNull() async throws {
@@ -1789,6 +1821,10 @@ final class FakeSettingsTransport: PlayerSettingsTransport, @unchecked Sendable 
     /// What the next `effectiveValues` call answers with.
     var effective: [EffectiveSettingValue] = []
     var effectiveError: SettingsAPIError?
+    /// The manifest revision `effectiveValues` reports. Defaults to this
+    /// build's head so most tests simulate a fully current server; a test of
+    /// revision-gated behavior overrides it to an older value.
+    var revision: Int = SettingKey.revision
     /// Artificial latency, so a test can overlap two flushes.
     var writeDelay: Duration?
     /// Models the production transport resolving the active profile after an
@@ -1875,9 +1911,10 @@ final class FakeSettingsTransport: PlayerSettingsTransport, @unchecked Sendable 
         recordedEffectiveCalls.append(keys)
         let settings = effective
         let error = effectiveError
+        let reportedRevision = revision
         lock.unlock()
         if let error { throw error }
-        return EffectiveSettingValuesResponse(settings: settings, revision: SettingKey.revision)
+        return EffectiveSettingValuesResponse(settings: settings, revision: reportedRevision)
     }
 
     func putValue(key: SettingKey, value: SettingJSONValue, profileId: String?) async throws {

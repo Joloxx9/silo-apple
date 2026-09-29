@@ -651,7 +651,13 @@ struct PlayerSettingsSheet: View {
                         }
 
                         Picker("Text opacity", selection: appearanceIntBinding(\.textOpacity)) {
-                            ForEach(Array(stride(from: 5, through: 100, by: 5)), id: \.self) { value in
+                            ForEach(
+                                Self.opacityPickerValues(
+                                    current: viewModel.settings.subtitleAppearance.textOpacity,
+                                    from: 5
+                                ),
+                                id: \.self
+                            ) { value in
                                 Text("\(value)%").tag(String(value))
                             }
                         }
@@ -673,7 +679,12 @@ struct PlayerSettingsSheet: View {
                         }
 
                         Picker("Background opacity", selection: appearanceIntBinding(\.backgroundOpacity)) {
-                            ForEach(Array(stride(from: 0, through: 100, by: 5)), id: \.self) { value in
+                            ForEach(
+                                Self.opacityPickerValues(
+                                    current: viewModel.settings.subtitleAppearance.backgroundOpacity
+                                ),
+                                id: \.self
+                            ) { value in
                                 Text("\(value)%").tag(String(value))
                             }
                         }
@@ -766,6 +777,16 @@ struct PlayerSettingsSheet: View {
                 Task { await viewModel.setSubtitleAppearance(next) }
             }
         )
+    }
+
+    /// A value synced from another client (the iOS/macOS free-typed percent
+    /// field, or Android's) can land off this picker's 5-point cadence.
+    /// Without the current value folded in, this desktop `Picker` shows no
+    /// selection until the user picks a different option.
+    private static func opacityPickerValues(current: Int, from: Int = 0) -> [Int] {
+        (Array(stride(from: from, through: 100, by: 5)) + [current])
+            .sorted()
+            .reduce(into: [Int]()) { acc, value in if acc.last != value { acc.append(value) } }
     }
 
     private func appearanceIntBinding(_ keyPath: WritableKeyPath<SubtitleAppearance, Int>) -> Binding<String> {

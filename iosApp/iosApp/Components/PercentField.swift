@@ -39,6 +39,12 @@ struct PercentField: View {
         .onChange(of: value) { _, newValue in
             if !focused { draft = String(newValue) }
         }
+        // The number pad has no Done key, so dismissing the sheet or
+        // navigating away while this field is still focused (swipe-away,
+        // back navigation) never fires onSubmit or the focus-change commit
+        // above — it just tears the view down with a typed-but-uncommitted
+        // draft. onDisappear is the SwiftUI equivalent safety net.
+        .onDisappear { commit() }
         .accessibilityElement(children: .combine)
         .accessibilityLabel(accessibilityLabelText)
         .accessibilityValue("\(value) percent")

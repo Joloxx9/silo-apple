@@ -649,6 +649,18 @@ final class PlayerSettings {
         subtitleSystemSelectionPreferences = SystemCaptionSelectionPreferences.current()
     }
 
+    /// The connected server's manifest revision, as last reported by a batched
+    /// effective-values read. `nil` until the first successful refresh of this
+    /// session, or after a read fails — writes stay conservative under either.
+    ///
+    /// `playback.subtitle_appearance` has been servable since revision 1, so
+    /// the per-key ``SettingKey/introducedIn`` table doesn't gate it — but a
+    /// sub-property added to its schema later (``SubtitleAppearance/textOpacity``,
+    /// revision 13) is unknown to an older server's schema validator, which
+    /// rejects the *entire* write rather than ignoring the one field. This is
+    /// what ``enqueueSubtitleAppearance(_:)`` checks before including it.
+    private var knownManifestRevision: Int?
+
     /// Pull every synced setting from the server and adopt it.
     ///
     /// One batched call: the server resolves all seventeen keys in a single
@@ -676,6 +688,7 @@ final class PlayerSettings {
 
         do {
             let response = try await flusher.effectiveValues(keys: SettingKey.playerDeviceSettings)
+            knownManifestRevision = response.revision
             let effectiveByKey = response.byKey
             applyEffectiveSettings(overlayingUnsettledValues(on: effectiveByKey))
 
@@ -962,6 +975,7 @@ final class PlayerSettings {
     func discardHeldDeviceSettingChanges() async -> Bool {
         do {
             let response = try await flusher.effectiveValues(keys: SettingKey.playerDeviceSettings)
+            knownManifestRevision = response.revision
             flusher.discardHeldChanges()
             applyEffectiveSettings(overlayingUnsettledValues(on: response.byKey))
             return true
@@ -1003,12 +1017,26 @@ final class PlayerSettings {
     /// stringified JSON the legacy string-only registry stored. Encoding goes
     /// through ``SettingJSONValue/encoding(_:)`` so the value's own camelCase
     /// keys (`fontSize`, `backgroundOpacity`) reach the server verbatim.
+    /// The manifest revision that added `textOpacity` to
+    /// `playback.subtitle_appearance`'s schema. See ``knownManifestRevision``.
+    private static let subtitleTextOpacityRevision = 13
+
     private func enqueueSubtitleAppearance(_ appearance: SubtitleAppearance) {
-        guard let value = try? SettingJSONValue.encoding(appearance) else {
+        guard var value = try? SettingJSONValue.encoding(appearance) else {
             // Unreachable for a struct of scalars, and dropping the write is
             // the right failure: the server would reject a value that cannot
             // be encoded, and the local value is already applied.
             return
+        }
+        // A server below revision 13 (or one this session hasn't confirmed
+        // yet) rejects the whole object for the unknown `textOpacity` member,
+        // not just that field — so it comes out of the wire payload rather
+        // than risk every subtitle-appearance edit failing outright. The
+        // value stays applied locally either way.
+        let knownRevision = knownManifestRevision ?? 0
+        if knownRevision < Self.subtitleTextOpacityRevision, case .object(var fields) = value {
+            fields.removeValue(forKey: "textOpacity")
+            value = .object(fields)
         }
         flusher.enqueue(.subtitleAppearance, value: value)
     }

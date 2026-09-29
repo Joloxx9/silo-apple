@@ -121,11 +121,24 @@ enum TVSettingsOptions {
     static let backgroundStyle: [TVSettingsOption] =
         SubtitleBackgroundStylePreset.selectableCases.map { .init(id: $0.rawValue, label: $0.label) }
 
-    static let backgroundOpacity: [TVSettingsOption] =
-        stride(from: 0, through: 100, by: 5).map { .init(id: String($0), label: "\($0)%") }
+    /// A value synced from another client (the iOS/macOS free-typed percent
+    /// field, or Android's) can land off this picker's 5-point cadence.
+    /// Without the current value folded in, this D-pad picker focuses the
+    /// first option, and pressing Select silently overwrites the real value.
+    private static func opacityOptions(current: Int, from: Int) -> [TVSettingsOption] {
+        (Array(stride(from: from, through: 100, by: 5)) + [current])
+            .sorted()
+            .reduce(into: [Int]()) { acc, value in if acc.last != value { acc.append(value) } }
+            .map { .init(id: String($0), label: "\($0)%") }
+    }
 
-    static let textOpacity: [TVSettingsOption] =
-        stride(from: 5, through: 100, by: 5).map { .init(id: String($0), label: "\($0)%") }
+    static func backgroundOpacity(current: Int) -> [TVSettingsOption] {
+        opacityOptions(current: current, from: 0)
+    }
+
+    static func textOpacity(current: Int) -> [TVSettingsOption] {
+        opacityOptions(current: current, from: 5)
+    }
 
     static let backgroundColor: [TVSettingsOption] =
         SubtitleAppearance.backgroundColors.map { .init(id: $0.hex, label: $0.label) }
