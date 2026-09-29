@@ -372,6 +372,26 @@ final class DownloadManager {
         record.posterFilename.flatMap { absoluteFileURL(for: record, filename: $0) }
     }
 
+    /// On-disk backdrop, fetched by the same asset pass as the poster; nil
+    /// when the server's bundle carried none or the file is missing.
+    func backdropImageURL(for record: DownloadRecord) -> URL? {
+        existingFileURL(for: record, filename: record.backdropFilename)
+    }
+
+    /// On-disk title logo, when the server's bundle carried one and the file
+    /// exists.
+    func logoImageURL(for record: DownloadRecord) -> URL? {
+        existingFileURL(for: record, filename: record.logoFilename)
+    }
+
+    /// Older builds recorded artwork filenames even when the write failed, so
+    /// a recorded name alone does not prove the file is there.
+    private func existingFileURL(for record: DownloadRecord, filename: String?) -> URL? {
+        guard let url = filename.flatMap({ absoluteFileURL(for: record, filename: $0) }),
+              FileManager.default.fileExists(atPath: url.path) else { return nil }
+        return url
+    }
+
     /// The record's current speed, or nil once its progress callbacks have
     /// stopped for longer than `rateMaxSampleGap` (a stalled or not yet
     /// started transfer), so the UI never keeps showing an old speed.
@@ -1401,7 +1421,14 @@ final class DownloadManager {
                   let url = absoluteFileURLForNewAsset(recordId: recordId, filename: entry.filename) else {
                 continue
             }
-            try? data.write(to: url, options: .atomic)
+            // Record the file only once it is on disk: the offline detail page
+            // shows a recorded logo in place of the title text.
+            do {
+                try data.write(to: url, options: .atomic)
+            } catch {
+                Self.logger.warning("download artwork write failed")
+                continue
+            }
             guard var record = file.records[recordId] else { continue }
             switch entry.kind {
             case "poster": record.posterFilename = entry.filename
