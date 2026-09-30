@@ -650,16 +650,20 @@ final class PlayerSettings {
     }
 
     /// The connected server's manifest revision, as last reported by a batched
-    /// effective-values read. `nil` until the first successful refresh of this
-    /// session, or after a read fails — writes stay conservative under either.
+    /// effective-values read. `nil` until this scope's refresh succeeds.
     ///
-    /// `playback.subtitle_appearance` has been servable since revision 1, so
-    /// the per-key ``SettingKey/introducedIn`` table doesn't gate it — but a
-    /// sub-property added to its schema later (``SubtitleAppearance/textOpacity``,
-    /// revision 13) is unknown to an older server's schema validator, which
-    /// rejects the *entire* write rather than ignoring the one field. This is
-    /// what ``enqueueSubtitleAppearance(_:)`` checks before including it.
-    private var knownManifestRevision: Int?
+    /// Mirrors ``PlayerSettingsFlusher/knownManifestRevision`` so settings
+    /// screens can observe it; the flusher's copy is the one that decides what
+    /// a write carries (see ``SettingKey/revisionGatedMembers``).
+    private(set) var knownManifestRevision: Int?
+
+    /// Whether to offer the subtitle text opacity control. Hidden only when the
+    /// server is known to predate the member: such a server never receives it,
+    /// so the choice would not survive the next refresh.
+    var offersSubtitleTextOpacity: Bool {
+        guard let knownManifestRevision else { return true }
+        return knownManifestRevision >= SettingKey.subtitleTextOpacityRevision
+    }
 
     /// Pull every synced setting from the server and adopt it.
     ///
@@ -670,12 +674,11 @@ final class PlayerSettings {
     @MainActor
     func refreshFromServer() async -> RefreshResult {
         // This instance survives server and profile switches, so a revision
-        // confirmed for the previous scope must not leak into the next one:
-        // clearing it first means a failed or pending refresh for a new
-        // (possibly older) server falls back to the conservative "unknown"
-        // gate rather than reusing a stale, too-permissive value — including
-        // for the pending-writes flush just below, which runs before this
-        // scope's own revision is confirmed.
+        // confirmed for the previous scope must not leak into the next one.
+        // Until this scope's read records its own, a write whose payload
+        // depends on the revision waits in the queue rather than being sent
+        // with a guess — including through the pending-writes flush below.
+        flusher.forgetManifestRevision()
         knownManifestRevision = nil
 
         // Capture the pre-contract values before applying the normalized cache
@@ -697,7 +700,7 @@ final class PlayerSettings {
 
         do {
             let response = try await flusher.effectiveValues(keys: SettingKey.playerDeviceSettings)
-            knownManifestRevision = response.revision
+            knownManifestRevision = flusher.knownManifestRevision
             let effectiveByKey = response.byKey
             applyEffectiveSettings(overlayingUnsettledValues(on: effectiveByKey))
 
@@ -720,6 +723,12 @@ final class PlayerSettings {
                     await flushPendingDeviceSettings()
                     markMigrationComplete(for: scopeID)
                 }
+            }
+            // A write that waited because it was made while the revision was
+            // unknown can go now. Only after the migration, whose "is anything
+            // owed" check must still see it as unsettled.
+            if flusher.hasRevisionGatedWrites {
+                await flushPendingDeviceSettings()
             }
             return .refreshed
         } catch SettingsAPIError.serverUpgradeRequired {
@@ -984,7 +993,7 @@ final class PlayerSettings {
     func discardHeldDeviceSettingChanges() async -> Bool {
         do {
             let response = try await flusher.effectiveValues(keys: SettingKey.playerDeviceSettings)
-            knownManifestRevision = response.revision
+            knownManifestRevision = flusher.knownManifestRevision
             flusher.discardHeldChanges()
             applyEffectiveSettings(overlayingUnsettledValues(on: response.byKey))
             return true
@@ -1026,26 +1035,14 @@ final class PlayerSettings {
     /// stringified JSON the legacy string-only registry stored. Encoding goes
     /// through ``SettingJSONValue/encoding(_:)`` so the value's own camelCase
     /// keys (`fontSize`, `backgroundOpacity`) reach the server verbatim.
-    /// The manifest revision that added `textOpacity` to
-    /// `playback.subtitle_appearance`'s schema. See ``knownManifestRevision``.
-    private static let subtitleTextOpacityRevision = 13
-
+    /// Members an older server does not know are removed by the flusher at
+    /// send time, not here (see ``SettingKey/revisionGatedMembers``).
     private func enqueueSubtitleAppearance(_ appearance: SubtitleAppearance) {
-        guard var value = try? SettingJSONValue.encoding(appearance) else {
+        guard let value = try? SettingJSONValue.encoding(appearance) else {
             // Unreachable for a struct of scalars, and dropping the write is
             // the right failure: the server would reject a value that cannot
             // be encoded, and the local value is already applied.
             return
-        }
-        // A server below revision 13 (or one this session hasn't confirmed
-        // yet) rejects the whole object for the unknown `textOpacity` member,
-        // not just that field — so it comes out of the wire payload rather
-        // than risk every subtitle-appearance edit failing outright. The
-        // value stays applied locally either way.
-        let knownRevision = knownManifestRevision ?? 0
-        if knownRevision < Self.subtitleTextOpacityRevision, case .object(var fields) = value {
-            fields.removeValue(forKey: "textOpacity")
-            value = .object(fields)
         }
         flusher.enqueue(.subtitleAppearance, value: value)
     }
@@ -1320,8 +1317,13 @@ final class PlayerSettings {
             guard let entry = effectiveByKey[key], entry.scope != .profileDevice else { continue }
             // Nothing to migrate when the resolved value already equals what
             // this device holds — typed comparison now, so `1` and `1.0` are
-            // not two different values the way their strings were.
-            if legacyValue.isSemanticallyEquivalent(to: entry.value) {
+            // not two different values the way their strings were. Compared as
+            // the server would store it: an older server's answer cannot carry
+            // a member it does not know, so that member is no difference.
+            let comparable = flusher.knownManifestRevision.map {
+                key.wireValue(legacyValue, forServerRevision: $0)
+            } ?? legacyValue
+            if comparable.isSemanticallyEquivalent(to: entry.value) {
                 continue
             }
             flusher.enqueue(key, value: legacyValue)

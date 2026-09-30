@@ -1062,6 +1062,9 @@ final class PlayerSettingsFlushTests: XCTestCase {
 
     func testLegacyAppleSubtitleDefaultIsMigratedWithoutACustomOverride() async throws {
         let harness = try PlayerSettingsHarness()
+        // Production imports only after a read has reported the server's
+        // revision, which the subtitle-appearance write waits for.
+        await harness.settings.refreshFromServer()
         let snapshot = harness.settings.legacySnapshot()
         var effectiveByKey = Dictionary(uniqueKeysWithValues: snapshot.map { key, value in
             (
@@ -1094,10 +1097,9 @@ final class PlayerSettingsFlushTests: XCTestCase {
 
     func testSettersEncodeEachKeyAsItsContractType() async throws {
         let harness = try PlayerSettingsHarness()
-        // Confirms the fake transport's current-revision server before editing,
-        // matching a real session (refreshFromServer always runs before the
-        // settings screen is reachable) — otherwise textOpacity is held back
-        // from the subtitle-appearance write until a revision is confirmed.
+        // A real session refreshes before any settings screen is reachable.
+        // Without it the subtitle-appearance write waits for the server's
+        // manifest revision instead of being sent.
         await harness.settings.refreshFromServer()
 
         harness.settings.setPreferredQuality("1080p-medium")
@@ -1143,16 +1145,16 @@ final class PlayerSettingsFlushTests: XCTestCase {
         XCTAssertEqual(byKey[.playerOrientationMode]?.value, .string("rotateFreely"))
     }
 
-    /// `textOpacity` was added to `playback.subtitle_appearance`'s schema at
-    /// manifest revision 13, but the key itself has been servable since
-    /// revision 1 — a server between those, or one this session hasn't
-    /// confirmed yet, has a schema validator that rejects the whole write for
-    /// the one unknown member. The field must come out of the wire payload
-    /// rather than fail every subtitle-appearance edit outright.
-    func testTextOpacityIsHeldBackFromAnUnconfirmedOrOlderServer() async throws {
+    /// `textOpacity` joined `playback.subtitle_appearance`'s schema at
+    /// ``SettingKey/subtitleTextOpacityRevision``, but the key has been served
+    /// since revision 1. An older server's schema rejects the whole object for
+    /// the one unknown member, so the member comes out of what is sent — and
+    /// only out of what is sent.
+    func testTextOpacityIsLeftOutOfWritesToAnOlderServer() async throws {
         let harness = try PlayerSettingsHarness()
-        harness.transport.revision = 12
+        harness.transport.revision = SettingKey.subtitleTextOpacityRevision - 1
         await harness.settings.refreshFromServer()
+        XCTAssertFalse(harness.settings.offersSubtitleTextOpacity)
 
         var appearance = SubtitleAppearance.default
         appearance.fontSize = .xlarge
@@ -1163,44 +1165,128 @@ final class PlayerSettingsFlushTests: XCTestCase {
         guard case .object(let fields) = write?.value else {
             return XCTFail("expected an object write for subtitle appearance")
         }
-        XCTAssertNil(fields["textOpacity"], "an unconfirmed/older server must not receive textOpacity")
-        // Every other member still writes normally.
+        XCTAssertNil(fields["textOpacity"], "an older server must not receive textOpacity")
         XCTAssertEqual(fields["fontSize"], .string("xlarge"))
-        // The chosen value still applies locally; only the wire payload held it back.
         XCTAssertEqual(harness.settings.subtitleAppearance.textOpacity, 42)
     }
 
-    /// `PlayerSettings.shared` survives server and profile switches. A
-    /// revision confirmed for the previous scope must not leak into the next
-    /// one: if that scope's own refresh fails (or hasn't completed), the
-    /// remembered revision has to fall back to "unknown" rather than reuse a
-    /// stale, too-permissive value from a different server.
-    func testKnownRevisionDoesNotSurviveAFailedRefreshAfterAScopeSwitch() async throws {
+    /// A refresh forgets the previous scope's revision before it reads the new
+    /// one. A subtitle edit made in that window must neither reach a server of
+    /// unknown revision with textOpacity nor be stripped for a server that
+    /// stores it: it waits, keeps its value on screen, and is sent whole once
+    /// the refresh learns the server is current.
+    func testASubtitleEditWaitsForTheServerRevisionAndKeepsTextOpacity() async throws {
         let harness = try PlayerSettingsHarness()
-        harness.transport.revision = 13
         await harness.settings.refreshFromServer()
 
-        // Confirms the setup: a known revision-13 server sends textOpacity.
+        // The refresh for the next scope has not learned its revision yet.
+        harness.transport.effectiveError = .transport(description: "offline")
+        await harness.settings.refreshFromServer()
+        XCTAssertNil(harness.settings.knownManifestRevision)
+        XCTAssertTrue(harness.settings.offersSubtitleTextOpacity, "an unknown server is not hidden from")
+        harness.transport.reset()
+
         var appearance = SubtitleAppearance.default
         appearance.textOpacity = 55
         await harness.settings.setSubtitleAppearance(appearance)
-        guard case .object(let firstFields) = harness.transport.writesByKey()[.playbackSubtitleAppearance]?.value else {
-            return XCTFail("expected an object write for subtitle appearance")
-        }
-        XCTAssertEqual(firstFields["textOpacity"], .int(55))
+        XCTAssertNil(
+            harness.transport.writesByKey()[.playbackSubtitleAppearance],
+            "a write must not guess the revision of a server it has not read"
+        )
 
-        // Simulates switching to a different (possibly older) server or
-        // profile whose refresh fails before confirming its own revision.
+        // The server still holds the profile's appearance from before the edit.
+        harness.transport.effective = [
+            EffectiveSettingValue(
+                key: SettingKey.playbackSubtitleAppearance.rawValue,
+                value: try SettingJSONValue.encoding(SubtitleAppearance.default),
+                source: .scope(.profile),
+                scope: .profile
+            ),
+        ]
+        harness.transport.effectiveError = nil
+        await harness.settings.refreshFromServer()
+
+        let write = harness.transport.writesByKey()[.playbackSubtitleAppearance]
+        guard case .object(let fields) = write?.value else {
+            return XCTFail("the waiting write must be sent once the revision is known")
+        }
+        XCTAssertEqual(fields["textOpacity"], .int(55))
+        XCTAssertEqual(harness.settings.subtitleAppearance.textOpacity, 55, "the refresh must not revert the edit")
+    }
+
+    /// The same wait, then an older server: the waiting write is sent without
+    /// the member that server would reject.
+    func testAWaitingSubtitleEditIsSentWithoutTextOpacityToAnOlderServer() async throws {
+        let harness = try PlayerSettingsHarness()
         harness.transport.effectiveError = .transport(description: "offline")
         await harness.settings.refreshFromServer()
-        harness.transport.effectiveError = nil
 
+        var appearance = SubtitleAppearance.default
+        appearance.fontSize = .small
         appearance.textOpacity = 77
         await harness.settings.setSubtitleAppearance(appearance)
-        guard case .object(let secondFields) = harness.transport.writesByKey()[.playbackSubtitleAppearance]?.value else {
-            return XCTFail("expected an object write for subtitle appearance")
+        XCTAssertNil(harness.transport.writesByKey()[.playbackSubtitleAppearance])
+
+        harness.transport.effectiveError = nil
+        harness.transport.revision = SettingKey.subtitleTextOpacityRevision - 1
+        await harness.settings.refreshFromServer()
+
+        guard case .object(let fields) = harness.transport.writesByKey()[.playbackSubtitleAppearance]?.value else {
+            return XCTFail("the waiting write must be sent once the revision is known")
         }
-        XCTAssertNil(secondFields["textOpacity"], "the prior scope's revision must not carry over")
+        XCTAssertNil(fields["textOpacity"])
+        XCTAssertEqual(fields["fontSize"], .string("small"))
+    }
+
+    /// The one-time legacy import goes through the same gate. On an older
+    /// server an unchanged appearance is not a difference just because this
+    /// build's encoding carries textOpacity, and a changed one is sent
+    /// without it.
+    func testLegacySubtitleImportRespectsAnOlderServersRevision() async throws {
+        let harness = try PlayerSettingsHarness()
+        let olderRevision = SettingKey.subtitleTextOpacityRevision - 1
+        harness.transport.revision = olderRevision
+        await harness.settings.refreshFromServer()
+        harness.transport.reset()
+
+        let snapshot = harness.settings.legacySnapshot()
+        let legacyAppearance = try XCTUnwrap(snapshot[.playbackSubtitleAppearance])
+        let serverAppearance = SettingKey.playbackSubtitleAppearance.wireValue(
+            legacyAppearance,
+            forServerRevision: olderRevision
+        )
+        XCTAssertNotEqual(serverAppearance, legacyAppearance)
+        func effective(_ appearance: SettingJSONValue) -> [SettingKey: EffectiveSettingValue] {
+            [
+                .playbackSubtitleAppearance: EffectiveSettingValue(
+                    key: SettingKey.playbackSubtitleAppearance.rawValue,
+                    value: appearance,
+                    source: .contractDefault
+                ),
+            ]
+        }
+
+        let importedUnchanged = await harness.settings.importLegacySettingsIfNeeded(
+            scopeID: "older-server-unchanged",
+            legacySnapshot: [.playbackSubtitleAppearance: legacyAppearance],
+            effectiveByKey: effective(serverAppearance)
+        )
+        XCTAssertFalse(importedUnchanged)
+        XCTAssertTrue(harness.transport.writes().isEmpty)
+
+        var changed = SubtitleAppearance.default
+        changed.fontSize = .xxlarge
+        let importedChanged = await harness.settings.importLegacySettingsIfNeeded(
+            scopeID: "older-server-changed",
+            legacySnapshot: [.playbackSubtitleAppearance: try SettingJSONValue.encoding(changed)],
+            effectiveByKey: effective(serverAppearance)
+        )
+        XCTAssertTrue(importedChanged)
+        guard case .object(let fields) = harness.transport.writesByKey()[.playbackSubtitleAppearance]?.value else {
+            return XCTFail("expected the legacy appearance to be imported")
+        }
+        XCTAssertNil(fields["textOpacity"], "the migration must not send an older server textOpacity")
+        XCTAssertEqual(fields["fontSize"], .string("xxlarge"))
     }
 
     func testNoAudioLanguagePreferenceIsSentAsJSONNull() async throws {
@@ -1257,6 +1343,7 @@ final class PlayerSettingsFlushTests: XCTestCase {
 
     func testSubtitleAppearanceIsSentAsAnObjectWithItsCamelCaseKeys() async throws {
         let harness = try PlayerSettingsHarness()
+        await harness.settings.refreshFromServer()
 
         var appearance = SubtitleAppearance.default
         appearance.fontSize = .xlarge
