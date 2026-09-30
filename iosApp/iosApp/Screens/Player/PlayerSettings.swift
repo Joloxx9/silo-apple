@@ -711,7 +711,11 @@ final class PlayerSettings {
         do {
             let response = try await flusher.effectiveValues(keys: SettingKey.playerDeviceSettings)
             knownManifestRevision = flusher.knownManifestRevision
-            manifestRevisionScopeID = knownManifestRevision == nil ? nil : refreshScopeID
+            // The read goes to whichever scope is active when it is sent. If the
+            // scope changed while this refresh awaited, the revision belongs to
+            // that other scope, so it is not kept for this one.
+            let scopeUnchanged = (Self.currentScopeIdentifier ?? "") == refreshScopeID
+            manifestRevisionScopeID = knownManifestRevision != nil && scopeUnchanged ? refreshScopeID : nil
             let effectiveByKey = response.byKey
             applyEffectiveSettings(overlayingUnsettledValues(on: effectiveByKey))
 
