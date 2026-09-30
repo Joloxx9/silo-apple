@@ -657,6 +657,10 @@ final class PlayerSettings {
     /// a write carries (see ``SettingKey/revisionGatedMembers``).
     private(set) var knownManifestRevision: Int?
 
+    /// The settings scope ``knownManifestRevision`` was read for ("" when no
+    /// scope was active), or nil when no revision is known.
+    private var manifestRevisionScopeID: String?
+
     /// Whether to offer the subtitle text opacity control. Hidden only when the
     /// server is known to predate the member: such a server never receives it,
     /// so the choice would not survive the next refresh.
@@ -678,8 +682,14 @@ final class PlayerSettings {
         // Until this scope's read records its own, a write whose payload
         // depends on the revision waits in the queue rather than being sent
         // with a guess — including through the pending-writes flush below.
-        flusher.forgetManifestRevision()
-        knownManifestRevision = nil
+        // The same scope keeps its revision, so a refresh that fails offline
+        // does not hold every later subtitle appearance write.
+        let refreshScopeID = Self.currentScopeIdentifier ?? ""
+        if refreshScopeID != manifestRevisionScopeID {
+            flusher.forgetManifestRevision()
+            knownManifestRevision = nil
+            manifestRevisionScopeID = nil
+        }
 
         // Capture the pre-contract values before applying the normalized cache
         // for this scope. That normalization intentionally turns a compound
@@ -701,6 +711,7 @@ final class PlayerSettings {
         do {
             let response = try await flusher.effectiveValues(keys: SettingKey.playerDeviceSettings)
             knownManifestRevision = flusher.knownManifestRevision
+            manifestRevisionScopeID = knownManifestRevision == nil ? nil : refreshScopeID
             let effectiveByKey = response.byKey
             applyEffectiveSettings(overlayingUnsettledValues(on: effectiveByKey))
 

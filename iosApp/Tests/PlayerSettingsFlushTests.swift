@@ -1170,16 +1170,14 @@ final class PlayerSettingsFlushTests: XCTestCase {
         XCTAssertEqual(harness.settings.subtitleAppearance.textOpacity, 42)
     }
 
-    /// A refresh forgets the previous scope's revision before it reads the new
-    /// one. A subtitle edit made in that window must neither reach a server of
-    /// unknown revision with textOpacity nor be stripped for a server that
-    /// stores it: it waits, keeps its value on screen, and is sent whole once
-    /// the refresh learns the server is current.
+    /// Until a read for this scope reports the revision, a subtitle edit must
+    /// neither reach a server of unknown revision with textOpacity nor be
+    /// stripped for a server that stores it: it waits, keeps its value on
+    /// screen, and is sent whole once the refresh learns the server is current.
     func testASubtitleEditWaitsForTheServerRevisionAndKeepsTextOpacity() async throws {
         let harness = try PlayerSettingsHarness()
-        await harness.settings.refreshFromServer()
 
-        // The refresh for the next scope has not learned its revision yet.
+        // The first refresh for this scope has not learned its revision yet.
         harness.transport.effectiveError = .transport(description: "offline")
         await harness.settings.refreshFromServer()
         XCTAssertNil(harness.settings.knownManifestRevision)
@@ -1212,6 +1210,29 @@ final class PlayerSettingsFlushTests: XCTestCase {
         }
         XCTAssertEqual(fields["textOpacity"], .int(55))
         XCTAssertEqual(harness.settings.subtitleAppearance.textOpacity, 55, "the refresh must not revert the edit")
+    }
+
+    /// A refresh that fails for the scope whose revision is already known keeps
+    /// that revision: going offline once must not hold every later subtitle
+    /// appearance write until the next successful read.
+    func testAFailedRefreshOfTheSameScopeKeepsTheKnownRevision() async throws {
+        let harness = try PlayerSettingsHarness()
+        await harness.settings.refreshFromServer()
+        XCTAssertEqual(harness.settings.knownManifestRevision, harness.transport.revision)
+
+        harness.transport.effectiveError = .transport(description: "offline")
+        await harness.settings.refreshFromServer()
+        XCTAssertEqual(harness.settings.knownManifestRevision, harness.transport.revision)
+        harness.transport.reset()
+
+        var appearance = SubtitleAppearance.default
+        appearance.textOpacity = 60
+        await harness.settings.setSubtitleAppearance(appearance)
+
+        guard case .object(let fields) = harness.transport.writesByKey()[.playbackSubtitleAppearance]?.value else {
+            return XCTFail("a known revision must not hold the write")
+        }
+        XCTAssertEqual(fields["textOpacity"], .int(60))
     }
 
     /// The same wait, then an older server: the waiting write is sent without
