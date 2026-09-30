@@ -121,6 +121,10 @@ struct TVMarqueeContent: Equatable {
     /// this nil so ordinary browsing does not fan out extra requests.
     let seriesContextId: String?
     let seriesContextSeasonNumber: Int?
+    /// Request previews (the Requests page): the stage track and a status
+    /// sentence drawn under the synopsis. Nil for catalog items.
+    var requestProgress: RequestProgress? = nil
+    var requestStatusText: String? = nil
 }
 
 extension TVMarqueeContent {
@@ -1237,10 +1241,15 @@ struct TVFocusMarquee: View {
         let fallbackRuntime = content.runtimeText == nil
             ? (enrichment?.runtimeText ?? "")
             : ""
-        let parts = [content.eyebrow, content.title, rating]
-            + content.metaParts
-            + [fallbackRuntime]
-            + [content.synopsis ?? "", enrichment?.detailLine ?? ""]
+        let requestStatus: String = content.requestStatusText ?? content.requestProgress?.longLabel ?? ""
+        // Built in typed steps: one long `+` chain of optionals and literals
+        // exceeds the type checker's time limit on CI.
+        var parts: [String] = [content.eyebrow, content.title, rating]
+        parts += content.metaParts
+        parts.append(fallbackRuntime)
+        parts.append(content.synopsis ?? "")
+        parts.append(enrichment?.detailLine ?? "")
+        parts.append(requestStatus)
         return parts
             .filter { !$0.isEmpty }
             .joined(separator: ", ")
@@ -1326,6 +1335,8 @@ private struct TVMarqueeBlock: View {
 
             detailLine
 
+            requestStatusLine
+
             badgeLine
         }
         .frame(maxWidth: SiloTheme.Skyline.marqueeContentWidth, alignment: .leading)
@@ -1333,6 +1344,24 @@ private struct TVMarqueeBlock: View {
         .onDisappear {
             logoTask?.cancel()
             logoTask = nil
+        }
+    }
+
+    @ViewBuilder
+    private var requestStatusLine: some View {
+        if let progress = content.requestProgress {
+            HStack(spacing: 22) {
+                RequestStatusLabel(
+                    progress: progress,
+                    text: content.requestStatusText,
+                    font: .system(size: 22, weight: .semibold),
+                    color: .siloOnSurface
+                )
+                .fixedSize()
+                RequestStageTrack(progress: progress)
+                    .frame(width: 240)
+            }
+            .padding(.top, 4)
         }
     }
 
