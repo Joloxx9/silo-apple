@@ -391,6 +391,21 @@ struct SubtitleAppearance: Codable, Equatable {
         return copy
     }
 
+    /// Values for a stepped opacity picker: `lowest` up to 100 in `step`
+    /// increments, plus `current` when another client stored a value between
+    /// them. Without `current`, a D-pad picker shows no selection, focus lands
+    /// on the first option, and Select silently overwrites the real value.
+    ///
+    /// `lowest` must be a multiple of `step` so 100 stays reachable.
+    static func opacityPickerValues(current: Int, lowest: Int, step: Int) -> [Int] {
+        var values = Array(stride(from: lowest, through: 100, by: step))
+        if !values.contains(current) {
+            values.append(current)
+            values.sort()
+        }
+        return values
+    }
+
     /// One-word style descriptor for summary rows ("Large · Box · Bottom").
     var styleDescription: String {
         if backgroundStyle == .box { return "Box" }

@@ -1286,7 +1286,7 @@ private struct SubtitleAppearanceDialog: View {
                                     title: "Text Opacity",
                                     options: Self.opacityOptions(
                                         current: viewModel.settings.subtitleAppearance.textOpacity,
-                                        floor: 1
+                                        lowest: 25
                                     ),
                                     selection: String(viewModel.settings.subtitleAppearance.textOpacity),
                                     onSelect: { value in
@@ -1375,7 +1375,7 @@ private struct SubtitleAppearanceDialog: View {
                                     title: "Background Opacity",
                                     options: Self.opacityOptions(
                                         current: viewModel.settings.subtitleAppearance.backgroundOpacity,
-                                        floor: 0
+                                        lowest: 0
                                     ),
                                     selection: String(viewModel.settings.subtitleAppearance.backgroundOpacity),
                                     onSelect: { value in
@@ -1506,15 +1506,11 @@ private struct SubtitleAppearanceDialog: View {
     private static let positionOptions: [HUDDropdownOption] =
         SubtitlePositionPreset.allCases.map { .init(id: $0.rawValue, label: $0.label) }
 
-    /// A value synced from another client (the iOS/macOS free-typed percent
-    /// field) can land off this picker's 25-point cadence. Without the
-    /// current value folded in, the picker shows no selection, focus lands on
-    /// the first option, and pressing Select silently overwrites the real
-    /// value with it.
-    private static func opacityOptions(current: Int, floor: Int) -> [HUDDropdownOption] {
-        (Array(stride(from: floor, through: 100, by: 25)) + [current])
-            .sorted()
-            .reduce(into: [Int]()) { acc, value in if acc.last != value { acc.append(value) } }
+    /// 25-point steps from `lowest`, plus the current value when another
+    /// client stored one between them. Text opacity starts at 25 (the schema's
+    /// floor is 1, which is invisible); background opacity starts at Off.
+    private static func opacityOptions(current: Int, lowest: Int) -> [HUDDropdownOption] {
+        SubtitleAppearance.opacityPickerValues(current: current, lowest: lowest, step: 25)
             .map { .init(id: String($0), label: $0 == 0 ? "Off" : "\($0)%") }
     }
 

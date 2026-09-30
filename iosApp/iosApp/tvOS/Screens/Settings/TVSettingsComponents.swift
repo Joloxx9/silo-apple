@@ -121,14 +121,10 @@ enum TVSettingsOptions {
     static let backgroundStyle: [TVSettingsOption] =
         SubtitleBackgroundStylePreset.selectableCases.map { .init(id: $0.rawValue, label: $0.label) }
 
-    /// A value synced from another client (the iOS/macOS free-typed percent
-    /// field, or Android's) can land off this picker's 5-point cadence.
-    /// Without the current value folded in, this D-pad picker focuses the
-    /// first option, and pressing Select silently overwrites the real value.
+    /// 5-point steps from `from`, plus the current value when another client
+    /// stored one between them (see ``SubtitleAppearance/opacityPickerValues(current:lowest:step:)``).
     private static func opacityOptions(current: Int, from: Int) -> [TVSettingsOption] {
-        (Array(stride(from: from, through: 100, by: 5)) + [current])
-            .sorted()
-            .reduce(into: [Int]()) { acc, value in if acc.last != value { acc.append(value) } }
+        SubtitleAppearance.opacityPickerValues(current: current, lowest: from, step: 5)
             .map { .init(id: String($0), label: "\($0)%") }
     }
 
