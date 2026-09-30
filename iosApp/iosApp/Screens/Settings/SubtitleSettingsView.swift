@@ -240,18 +240,20 @@ struct SubtitleSettingsView: View {
                 selection: appearanceBinding(\.fontColor)
             )
 
-            PercentField(
-                label: "Opacity",
-                accessibilityLabelText: "Text Opacity",
-                min: 1,
-                value: viewModel.subtitleAppearance.textOpacity
-            ) { newValue in
-                var next = viewModel.subtitleAppearance
-                if next.textOpacity == newValue { return }
-                next.textOpacity = newValue
-                Task { await viewModel.setSubtitleAppearance(next) }
+            if viewModel.offersSubtitleTextOpacity {
+                PercentField(
+                    label: "Opacity",
+                    accessibilityLabelText: "Text Opacity",
+                    min: 1,
+                    value: viewModel.subtitleAppearance.textOpacity
+                ) { newValue in
+                    var next = viewModel.subtitleAppearance
+                    if next.textOpacity == newValue { return }
+                    next.textOpacity = newValue
+                    Task { await viewModel.setSubtitleAppearance(next) }
+                }
+                .foregroundStyle(Color.siloOnSurface)
             }
-            .foregroundStyle(Color.siloOnSurface)
 
             Toggle("Text Outline", isOn: appearanceBinding(\.textOutline))
                 .foregroundStyle(Color.siloOnSurface)

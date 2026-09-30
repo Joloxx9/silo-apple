@@ -274,7 +274,9 @@ struct PlayerSettingsSheet: View {
                     }
                 }
 
-                textOpacityRow
+                if viewModel.settings.offersSubtitleTextOpacity {
+                    textOpacityRow
+                }
 
                 Toggle("Text outline", isOn: appearanceBoolBinding(\.textOutline))
                     .tint(.siloSwitchOn)
@@ -650,15 +652,17 @@ struct PlayerSettingsSheet: View {
                             }
                         }
 
-                        Picker("Text opacity", selection: appearanceIntBinding(\.textOpacity)) {
-                            ForEach(
-                                Self.opacityPickerValues(
-                                    current: viewModel.settings.subtitleAppearance.textOpacity,
-                                    from: 5
-                                ),
-                                id: \.self
-                            ) { value in
-                                Text("\(value)%").tag(String(value))
+                        if viewModel.settings.offersSubtitleTextOpacity {
+                            Picker("Text opacity", selection: appearanceIntBinding(\.textOpacity)) {
+                                ForEach(
+                                    Self.opacityPickerValues(
+                                        current: viewModel.settings.subtitleAppearance.textOpacity,
+                                        from: 5
+                                    ),
+                                    id: \.self
+                                ) { value in
+                                    Text("\(value)%").tag(String(value))
+                                }
                             }
                         }
 

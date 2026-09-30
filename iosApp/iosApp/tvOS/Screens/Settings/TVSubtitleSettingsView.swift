@@ -136,14 +136,16 @@ struct TVSubtitleSettingsPane: View {
             pickerRow("Font Color", options: TVSettingsOptions.fontColor,
                       selection: viewModel.subtitleAppearance.fontColor.lowercased(), kind: .fontColor)
 
-            TVSettingsPickerRow(
-                title: "Text Opacity",
-                value: "\(viewModel.subtitleAppearance.textOpacity)%"
-            ) {
-                guard viewModel.subtitleUsesDeviceAppearanceOverride else { return }
-                showPicker(.textOpacity)
+            if viewModel.offersSubtitleTextOpacity {
+                TVSettingsPickerRow(
+                    title: "Text Opacity",
+                    value: "\(viewModel.subtitleAppearance.textOpacity)%"
+                ) {
+                    guard viewModel.subtitleUsesDeviceAppearanceOverride else { return }
+                    showPicker(.textOpacity)
+                }
+                .focused(detailFocus, equals: .subtitleTextOpacity)
             }
-            .focused(detailFocus, equals: .subtitleTextOpacity)
 
             TVSettingsToggleRow(
                 title: "Text Outline",

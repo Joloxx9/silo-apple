@@ -1279,26 +1279,28 @@ private struct SubtitleAppearanceDialog: View {
                         .focused($focusedField, equals: .textColor)
                         .id(Field.textColor)
 
-                        HUDSettingRow(label: "Text Opacity", value: textOpacityLabel) {
-                            presentPicker(
-                                for: .textOpacity,
-                                HUDPickerPresentation(
-                                    title: "Text Opacity",
-                                    options: Self.opacityOptions(
-                                        current: viewModel.settings.subtitleAppearance.textOpacity,
-                                        lowest: 25
-                                    ),
-                                    selection: String(viewModel.settings.subtitleAppearance.textOpacity),
-                                    onSelect: { value in
-                                        if let opacity = Int(value) {
-                                            updateAppearance { $0.textOpacity = opacity }
+                        if viewModel.settings.offersSubtitleTextOpacity {
+                            HUDSettingRow(label: "Text Opacity", value: textOpacityLabel) {
+                                presentPicker(
+                                    for: .textOpacity,
+                                    HUDPickerPresentation(
+                                        title: "Text Opacity",
+                                        options: Self.opacityOptions(
+                                            current: viewModel.settings.subtitleAppearance.textOpacity,
+                                            lowest: 25
+                                        ),
+                                        selection: String(viewModel.settings.subtitleAppearance.textOpacity),
+                                        onSelect: { value in
+                                            if let opacity = Int(value) {
+                                                updateAppearance { $0.textOpacity = opacity }
+                                            }
                                         }
-                                    }
+                                    )
                                 )
-                            )
+                            }
+                            .focused($focusedField, equals: .textOpacity)
+                            .id(Field.textOpacity)
                         }
-                        .focused($focusedField, equals: .textOpacity)
-                        .id(Field.textOpacity)
 
                         HUDToggleRow(
                             label: "Text outline",
