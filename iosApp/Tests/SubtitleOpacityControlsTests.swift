@@ -3,7 +3,8 @@ import XCTest
 @testable import Silo
 
 /// The stepped opacity pickers on tvOS (player HUD and Settings) build their
-/// options from ``SubtitleAppearance/opacityPickerValues(current:lowest:step:)``.
+/// options from ``SubtitleAppearance/opacityPickerValues(current:lowest:step:)``;
+/// iOS and macOS type the value into ``PercentField``.
 final class SubtitleOpacityControlsTests: XCTestCase {
 
     /// The HUD's text opacity picker: fully opaque must stay selectable after
@@ -41,5 +42,15 @@ final class SubtitleOpacityControlsTests: XCTestCase {
             SubtitleAppearance.opacityPickerValues(current: 42, lowest: 5, step: 5).filter { $0 >= 40 && $0 <= 45 },
             [40, 42, 45]
         )
+    }
+
+    /// macOS has no number pad, so a typed "%" or stray space must not throw
+    /// the edit away.
+    func testPercentFieldAcceptsATrailingPercentSignAndWhitespace() {
+        XCTAssertEqual(PercentField.parse("42"), 42)
+        XCTAssertEqual(PercentField.parse(" 42% "), 42)
+        XCTAssertEqual(PercentField.parse("42 %"), 42)
+        XCTAssertNil(PercentField.parse("%"))
+        XCTAssertNil(PercentField.parse("forty"))
     }
 }

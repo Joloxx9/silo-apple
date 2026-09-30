@@ -15,13 +15,24 @@ struct PercentField: View {
     let onCommit: (Int) -> Void
 
     @State private var draft: String = ""
+    /// True once the user has typed since the last commit or resync. Only a
+    /// typed draft is committed: onSubmit, focus loss and onDisappear can all
+    /// fire for one edit, and the later ones must neither repeat the write nor
+    /// put an untouched draft back over a value synced in the meantime.
+    @State private var isDirty = false
     @FocusState private var focused: Bool
 
     var body: some View {
         HStack(spacing: 12) {
             Text(label)
             Spacer()
-            TextField("", text: $draft)
+            TextField("", text: Binding(
+                get: { draft },
+                set: { newDraft in
+                    draft = newDraft
+                    isDirty = true
+                }
+            ))
                 #if os(iOS)
                 .keyboardType(.numberPad)
                 #endif
@@ -32,18 +43,36 @@ struct PercentField: View {
                 .onChange(of: focused) { _, isFocused in
                     if !isFocused { commit() }
                 }
+                #if os(iOS)
+                // The number pad has no return key, so without this there is
+                // no way to finish an edit short of tapping elsewhere.
+                .toolbar {
+                    if focused {
+                        ToolbarItemGroup(placement: .keyboard) {
+                            Spacer()
+                            Button("Done") {
+                                commit()
+                                focused = false
+                            }
+                        }
+                    }
+                }
+                #endif
             Text("%")
                 .foregroundStyle(Color.siloSecondaryText)
         }
         .onAppear { draft = String(value) }
         .onChange(of: value) { _, newValue in
-            if !focused { draft = String(newValue) }
+            // A synced value replaces the draft unless the user is typing.
+            if !focused || !isDirty {
+                draft = String(newValue)
+                isDirty = false
+            }
         }
-        // The number pad has no Done key, so dismissing the sheet or
-        // navigating away while this field is still focused (swipe-away,
-        // back navigation) never fires onSubmit or the focus-change commit
-        // above — it just tears the view down with a typed-but-uncommitted
-        // draft. onDisappear is the SwiftUI equivalent safety net.
+        // Dismissing the sheet or navigating away while this field is still
+        // focused (swipe-away, back navigation) never fires onSubmit or the
+        // focus-change commit above — it just tears the view down with a
+        // typed-but-uncommitted draft. onDisappear is the safety net.
         .onDisappear { commit() }
         .accessibilityElement(children: .combine)
         .accessibilityLabel(accessibilityLabelText)
@@ -51,7 +80,9 @@ struct PercentField: View {
     }
 
     private func commit() {
-        guard let parsed = Int(draft) else {
+        guard isDirty else { return }
+        isDirty = false
+        guard let parsed = Self.parse(draft) else {
             draft = String(value)
             return
         }
@@ -60,5 +91,15 @@ struct PercentField: View {
         if clamped != value {
             onCommit(clamped)
         }
+    }
+
+    /// Accepts what a user plausibly types into a percent field: surrounding
+    /// whitespace and a trailing "%" (macOS has no number pad to prevent it).
+    static func parse(_ text: String) -> Int? {
+        var trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.hasSuffix("%") {
+            trimmed = String(trimmed.dropLast()).trimmingCharacters(in: .whitespaces)
+        }
+        return Int(trimmed)
     }
 }
