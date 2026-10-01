@@ -481,6 +481,7 @@ struct TVRequestsPage: View {
         meta.append(item.mediaType.displayName)
         let progress: RequestProgress?
         let statusText: String?
+        var rating: DisplayRating?
         switch item {
         case .record(let record), .approval(let record):
             meta.append("Requested \(record.createdAt.formatted(.dateTime.month(.abbreviated).day()))")
@@ -496,9 +497,7 @@ struct TVRequestsPage: View {
                     return progress
                 }
             statusText = progress?.longLabel
-            if let rating = result.voteAverage, rating > 0 {
-                meta.append(String(format: "TMDB %.1f", rating))
-            }
+            rating = DisplayRating.tmdb(result.voteAverage)
         }
         return TVMarqueeContent(
             id: "\(row.id)#\(item.id)",
@@ -509,6 +508,8 @@ struct TVRequestsPage: View {
             logoUrl: nil,
             badges: [],
             metaParts: meta,
+            rating: rating,
+            trailingMetaParts: [],
             runtimeMetaIndex: meta.count,
             runtimeText: nil,
             synopsis: item.overview,

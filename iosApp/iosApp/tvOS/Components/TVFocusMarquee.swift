@@ -86,6 +86,11 @@ struct TVMarqueeContent: Equatable {
     /// Dot-joined identity tokens: year · genre · runtime, or
     /// `S2 E7 · episode title · 45 min · 23 min left` for episodes.
     let metaParts: [String]
+    /// The card's one external rating (IMDb, else TMDB), drawn as its mark
+    /// and score after `metaParts`. Never set for episodes.
+    let rating: DisplayRating?
+    /// Tokens that follow the rating (Continue Watching's `23 min left`).
+    let trailingMetaParts: [String]
     /// Where runtime belongs in `metaParts`. Detail enrichment inserts its
     /// fallback here when a lightweight section payload omitted runtime.
     let runtimeMetaIndex: Int
@@ -154,18 +159,19 @@ extension TVMarqueeContent {
             durationSeconds: item.durationSeconds
         )
         if let runtimeText { meta.append(runtimeText) }
-        if !isEpisode, let rating = item.ratingImdb {
-            meta.append(String(format: "%.1f", rating))
-        }
+        let rating = isEpisode
+            ? nil
+            : DisplayRating.primaryCard(imdb: item.ratingImdb, tmdb: item.ratingTmdb)
         // A runtime is useful everywhere; remaining time is resume-state
         // information and belongs exclusively to a genuinely started item in
         // Continue Watching. Unstarted next-up items therefore show no value.
+        var trailingMeta: [String] = []
         if isContinueWatching,
            let timeLeft = Self.timeLeftText(
                position: item.positionSeconds,
                duration: item.durationSeconds
            ) {
-            meta.append(timeLeft)
+            trailingMeta.append(timeLeft)
         }
 
         let badges = Self.badges(from: item.overlaySummary)
@@ -182,6 +188,8 @@ extension TVMarqueeContent {
             logoUrl: item.logoUrl,
             badges: badges,
             metaParts: meta,
+            rating: rating,
+            trailingMetaParts: trailingMeta,
             runtimeMetaIndex: runtimeMetaIndex,
             runtimeText: runtimeText,
             synopsis: item.overview,
@@ -222,6 +230,8 @@ extension TVMarqueeContent {
             logoUrl: nil,
             badges: [],
             metaParts: meta,
+            rating: nil,
+            trailingMetaParts: [],
             runtimeMetaIndex: meta.count,
             runtimeText: nil,
             synopsis: nil,
@@ -1247,6 +1257,8 @@ struct TVFocusMarquee: View {
         var parts: [String] = [content.eyebrow, content.title, rating]
         parts += content.metaParts
         parts.append(fallbackRuntime)
+        parts.append(content.rating?.accessibilityText ?? "")
+        parts += content.trailingMetaParts
         parts.append(content.synopsis ?? "")
         parts.append(enrichment?.detailLine ?? "")
         parts.append(requestStatus)
@@ -1434,18 +1446,15 @@ private struct TVMarqueeBlock: View {
 
     @ViewBuilder
     private var metaLine: some View {
-        if content.contentId != nil || !displayedMetaParts.isEmpty {
+        if content.contentId != nil || hasMetaText {
             HStack(spacing: 10) {
                 if let contentRatingBadge = displayedContentRatingBadge {
                     badgeChip(contentRatingBadge)
                         .fixedSize(horizontal: true, vertical: false)
                 }
 
-                if !displayedMetaParts.isEmpty {
-                    Text(displayedMetaParts.joined(separator: " · "))
-                        .font(.system(size: scale.metaSize, weight: .medium))
-                        .foregroundStyle(Color.siloSecondaryText)
-                        .lineLimit(1)
+                if hasMetaText {
+                    metaText
                 }
             }
             // Keep the line's height stable when a rating arrives, while its
@@ -1456,6 +1465,33 @@ private struct TVMarqueeBlock: View {
                 alignment: .leading
             )
         }
+    }
+
+    private var hasMetaText: Bool {
+        !displayedMetaParts.isEmpty || content.rating != nil || !content.trailingMetaParts.isEmpty
+    }
+
+    /// `year · genre · runtime · IMDb 7.8 · 23 min left`. The rating keeps
+    /// its full width; the text around it truncates first.
+    private var metaText: some View {
+        let lead = displayedMetaParts
+        let trailing = content.trailingMetaParts
+        return HStack(alignment: .firstTextBaseline, spacing: 0) {
+            if !lead.isEmpty {
+                Text(lead.joined(separator: " · "))
+            }
+            if let rating = content.rating {
+                if !lead.isEmpty { Text(" · ") }
+                RatingEntryView(rating: rating, size: scale.metaSize)
+            }
+            if !trailing.isEmpty {
+                if !lead.isEmpty || content.rating != nil { Text(" · ") }
+                Text(trailing.joined(separator: " · "))
+            }
+        }
+        .font(.system(size: scale.metaSize, weight: .medium))
+        .foregroundStyle(Color.siloSecondaryText)
+        .lineLimit(1)
     }
 
     private var displayedMetaParts: [String] {

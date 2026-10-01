@@ -273,6 +273,10 @@ struct PhoneDetailHero<Actions: View, BelowOverview: View>: View {
     let ratingChip: String?
     let overview: String?
     let factsLine: [PhoneHeroFactToken]
+    /// External ratings in server order, shown as a row under the facts: the
+    /// first `DisplayRating.phoneLimit` on one line in the compact layout,
+    /// all of them in the expanded one.
+    var ratings: [DisplayRating] = []
     var creditText: String? = nil
     /// Retained at the call boundary for source compatibility. Detail artwork
     /// intentionally renders no card-overlay badges in this redesigned surface.
@@ -322,7 +326,7 @@ struct PhoneDetailHero<Actions: View, BelowOverview: View>: View {
             compactArtwork
 
             VStack(spacing: 16) {
-                metadataBlock(alignment: .center, textAlignment: .center)
+                metadataBlock(alignment: .center, textAlignment: .center, isCompact: true)
 
                 actions()
                     .padding(.top, 2)
@@ -389,7 +393,7 @@ struct PhoneDetailHero<Actions: View, BelowOverview: View>: View {
                 titleBlock(textAlignment: .leading, logoHeight: 122)
                     .frame(maxWidth: 430, alignment: .leading)
 
-                metadataBlock(alignment: .leading, textAlignment: .leading)
+                metadataBlock(alignment: .leading, textAlignment: .leading, isCompact: false)
                 overviewBlock
                 creditBlock(alignment: .leading)
                 belowOverview()
@@ -521,21 +525,39 @@ struct PhoneDetailHero<Actions: View, BelowOverview: View>: View {
     @ViewBuilder
     private func metadataBlock(
         alignment: Alignment,
-        textAlignment: TextAlignment
+        textAlignment: TextAlignment,
+        isCompact: Bool
     ) -> some View {
-        if !metadataTokens.isEmpty || ratingChip != nil {
-            ViewThatFits(in: .horizontal) {
-                HStack(spacing: 8) {
-                    metadataText(textAlignment: textAlignment)
-                    ratingView
-                }
-                .frame(maxWidth: .infinity, alignment: alignment)
+        let stackAlignment: HorizontalAlignment = textAlignment == .leading ? .leading : .center
+        let hasFacts = !metadataTokens.isEmpty || ratingChip != nil
+        if hasFacts || !ratings.isEmpty {
+            VStack(alignment: stackAlignment, spacing: 10) {
+                if hasFacts {
+                    ViewThatFits(in: .horizontal) {
+                        HStack(spacing: 8) {
+                            metadataText(textAlignment: textAlignment)
+                            ratingView
+                        }
+                        .frame(maxWidth: .infinity, alignment: alignment)
 
-                VStack(alignment: textAlignment == .leading ? .leading : .center, spacing: 8) {
-                    metadataText(textAlignment: textAlignment)
-                    ratingView
+                        VStack(alignment: stackAlignment, spacing: 8) {
+                            metadataText(textAlignment: textAlignment)
+                            ratingView
+                        }
+                        .frame(maxWidth: .infinity, alignment: alignment)
+                    }
                 }
-                .frame(maxWidth: .infinity, alignment: alignment)
+                if !ratings.isEmpty {
+                    Group {
+                        if isCompact {
+                            PhoneRatingsRow(ratings: ratings, size: 15)
+                        } else {
+                            RatingsRow(ratings: ratings, size: 15, alignment: stackAlignment)
+                        }
+                    }
+                    .foregroundStyle(Color.siloOnSurface)
+                    .frame(maxWidth: .infinity, alignment: alignment)
+                }
             }
         }
     }

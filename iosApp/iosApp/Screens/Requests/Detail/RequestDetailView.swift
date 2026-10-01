@@ -126,6 +126,7 @@ struct RequestDetailView: View {
                         ratingChip: detail.contentRating,
                         overview: detail.overview,
                         factsLine: factTokens(detail).map { PhoneHeroFactToken.text($0) },
+                        ratings: ratings(detail),
                         creditText: creditText(detail),
                         enablesArtworkParallax: true,
                         actions: { phoneActions(detail) },
@@ -274,6 +275,7 @@ struct RequestDetailView: View {
                         ratingChip: detail.contentRating,
                         overview: detail.overview,
                         factsLine: factTokens(detail).map { TVHeroFactToken.text($0) },
+                        ratings: ratings(detail),
                         starringText: creditText(detail),
                         playbackSummary: TVPlaybackSelectionSummary(version: nil, audio: nil, subtitles: nil),
                         showsPlaybackSummary: false,
@@ -533,10 +535,14 @@ struct RequestDetailView: View {
         } else if let runtime = detail.runtime, runtime > 0 {
             parts.append(runtime >= 60 ? "\(runtime / 60)h \(runtime % 60)m" : "\(runtime)m")
         }
-        if let rating = detail.voteAverage, rating > 0 {
-            parts.append(String(format: "TMDB %.1f", rating))
-        }
+        // The TMDB score renders as a rating entry (logo + score), not text.
         return parts
+    }
+
+    /// Requests carry only TMDB's vote average, shown like a title page's
+    /// TMDB rating.
+    private func ratings(_ detail: RequestMediaDetail) -> [DisplayRating] {
+        DisplayRating.tmdb(detail.voteAverage).map { [$0] } ?? []
     }
 
     private func creditText(_ detail: RequestMediaDetail) -> String? {
