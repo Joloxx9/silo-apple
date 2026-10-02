@@ -384,6 +384,27 @@ final class DownloadManager {
         existingFileURL(for: record, filename: record.logoFilename)
     }
 
+    /// On-disk parent series poster of an episode download. An episode's own
+    /// poster is its still, so only this one suits a 2:3 series tile.
+    func seriesPosterImageURL(for record: DownloadRecord) -> URL? {
+        existingFileURL(for: record, filename: record.seriesPosterFilename)
+    }
+
+    /// The poster for a record's 2:3 list tile: an episode's series poster,
+    /// else the record's own poster.
+    func tilePosterImageURL(for record: DownloadRecord) -> URL? {
+        seriesPosterImageURL(for: record) ?? posterImageURL(for: record)
+    }
+
+    /// The poster for a downloaded series: the series poster from any of its
+    /// episodes, else an episode still from a download made before the server
+    /// sent series posters.
+    func seriesPosterImageURL(for group: DownloadSeriesGroup) -> URL? {
+        let records = group.allRecords
+        return records.lazy.compactMap { self.seriesPosterImageURL(for: $0) }.first
+            ?? records.lazy.compactMap { self.existingFileURL(for: $0, filename: $0.posterFilename) }.first
+    }
+
     /// Older builds recorded artwork filenames even when the write failed, so
     /// a recorded name alone does not prove the file is there.
     private func existingFileURL(for record: DownloadRecord, filename: String?) -> URL? {
@@ -1362,6 +1383,7 @@ final class DownloadManager {
         record.revision = manifest.revision ?? record.revision
         record.container = manifest.container
         record.posterThumbhash = record.posterThumbhash ?? manifest.posterThumbhash
+        record.seriesPosterThumbhash = manifest.seriesPosterThumbhash ?? record.seriesPosterThumbhash
         record.stableIdentity = manifest.stableIdentity
         if let seriesId = manifest.seriesId { record.seriesId = seriesId }
         record.seriesTitle = record.seriesTitle ?? manifest.seriesTitle
@@ -1402,6 +1424,7 @@ final class DownloadManager {
             ("poster", manifest.artworkUrls?.poster, "poster.jpg"),
             ("backdrop", manifest.artworkUrls?.backdrop, "backdrop.jpg"),
             ("logo", manifest.artworkUrls?.logo, "logo.png"),
+            ("series_poster", manifest.artworkUrls?.seriesPoster, "series_poster.jpg"),
         ]
         for entry in kinds {
             // Only fetch artwork the manifest actually advertises. The server
@@ -1434,6 +1457,7 @@ final class DownloadManager {
             case "poster": record.posterFilename = entry.filename
             case "backdrop": record.backdropFilename = entry.filename
             case "logo": record.logoFilename = entry.filename
+            case "series_poster": record.seriesPosterFilename = entry.filename
             default: break
             }
             file.records[recordId] = record
@@ -3238,6 +3262,7 @@ final class DownloadManager {
         record.posterFilename = nil
         record.backdropFilename = nil
         record.logoFilename = nil
+        record.seriesPosterFilename = nil
         record.subtitleFilenames = [:]
         record.resumeDataFilename = nil
         record.container = nil

@@ -80,7 +80,10 @@ struct DownloadReclaimSheet: View {
         } label: {
             HStack(spacing: 12) {
                 DownloadSelectionCircle(selected: !kept.contains(record.id))
-                ThumbhashImage(thumbhash: record.posterThumbhash)
+                DownloadArtworkImage(
+                    thumbhash: record.posterThumbhash,
+                    fileURL: DownloadManager.shared.posterImageURL(for: record)
+                )
                     .frame(width: 48, height: 28)
                     .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
                 VStack(alignment: .leading, spacing: 2) {

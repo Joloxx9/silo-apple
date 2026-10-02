@@ -58,8 +58,8 @@ struct DownloadActiveRow: View {
         HStack(spacing: 12) {
             if selecting { DownloadSelectionCircle(selected: selected) }
             DownloadPosterThumb(
-                thumbhash: record.posterThumbhash,
-                fileURL: DownloadManager.shared.posterImageURL(for: record),
+                thumbhash: record.tileThumbhash,
+                fileURL: DownloadManager.shared.tilePosterImageURL(for: record),
                 width: 40
             )
 
@@ -282,8 +282,8 @@ struct DownloadAttentionRow: View {
     var body: some View {
         HStack(spacing: 12) {
             DownloadPosterThumb(
-                thumbhash: record.posterThumbhash,
-                fileURL: DownloadManager.shared.posterImageURL(for: record),
+                thumbhash: record.tileThumbhash,
+                fileURL: DownloadManager.shared.tilePosterImageURL(for: record),
                 width: 40
             )
             VStack(alignment: .leading, spacing: 4) {
@@ -465,19 +465,11 @@ struct DownloadSeriesRow: View {
                 .offset(x: 3.5)
             DownloadPosterThumb(
                 thumbhash: group.posterThumbhash,
-                fileURL: posterFileURL,
+                fileURL: DownloadManager.shared.seriesPosterImageURL(for: group),
                 width: 40
             )
         }
         .frame(width: 47, height: 60, alignment: .leading)
-    }
-
-    /// First on-disk poster among the group's episodes — every episode of a
-    /// series carries the same series poster in its download bundle.
-    private var posterFileURL: URL? {
-        group.allRecords.lazy
-            .compactMap { DownloadManager.shared.posterImageURL(for: $0) }
-            .first
     }
 
     /// Antenna glyph after the title of a series with an active monitoring
@@ -531,7 +523,10 @@ struct DownloadEpisodeRow: View {
     var body: some View {
         Button(action: onPlay) {
             HStack(spacing: 11) {
-                ThumbhashImage(thumbhash: record.posterThumbhash)
+                DownloadArtworkImage(
+                    thumbhash: record.posterThumbhash,
+                    fileURL: DownloadManager.shared.posterImageURL(for: record)
+                )
                     .frame(width: 54, height: 32)
                     .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
                     .overlay(

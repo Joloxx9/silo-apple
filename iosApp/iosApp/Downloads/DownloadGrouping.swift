@@ -158,7 +158,8 @@ enum DownloadGroupBuilder {
         return DownloadSeriesGroup(
             seriesId: seriesId,
             title: title,
-            posterThumbhash: records.compactMap(\.posterThumbhash).first,
+            posterThumbhash: records.compactMap(\.seriesPosterThumbhash).first
+                ?? records.compactMap(\.posterThumbhash).first,
             seasons: seasons,
             totalBytes: records.reduce(0) { $0 + $1.fileSize },
             episodeCount: records.count,

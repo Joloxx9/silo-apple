@@ -18,9 +18,11 @@ final class DownloadGroupingTests: XCTestCase {
         bytes: Int64,
         title: String? = nil,
         seriesTitle: String? = nil,
-        status: LocalDownloadStatus = .completed
+        status: LocalDownloadStatus = .completed,
+        posterThumbhash: String? = nil,
+        seriesPosterThumbhash: String? = nil
     ) -> DownloadRecord {
-        DownloadRecord(
+        var record = DownloadRecord(
             id: id,
             contentId: series,
             episodeId: "\(id)-leaf",
@@ -44,7 +46,7 @@ final class DownloadGroupingTests: XCTestCase {
             seriesTitle: seriesTitle,
             seasonNumber: season,
             episodeNumber: number,
-            posterThumbhash: nil,
+            posterThumbhash: posterThumbhash,
             container: "mp4",
             stableIdentity: nil,
             registeredAt: Date(timeIntervalSince1970: 1_000_000 + Double(season * 100 + number)),
@@ -53,6 +55,8 @@ final class DownloadGroupingTests: XCTestCase {
             retryCount: 0,
             taskIdentifier: nil
         )
+        record.seriesPosterThumbhash = seriesPosterThumbhash
+        return record
     }
 
     private func movie(_ id: String, bytes: Int64, title: String) -> DownloadRecord {
@@ -118,6 +122,20 @@ final class DownloadGroupingTests: XCTestCase {
         XCTAssertEqual(result.first?.seriesId, "show")
         XCTAssertEqual(result.first?.episodeCount, 2)
         XCTAssertEqual(result.first?.totalBytes, 300)
+    }
+
+    /// An episode's own poster is its still, so the series tile uses the
+    /// series poster whenever any episode's manifest named one.
+    func testSeriesPosterThumbhashWinsOverEpisodeStills() {
+        let withSeriesPoster = groups([
+            episode("a", series: "s1", season: 1, number: 1, bytes: 1, posterThumbhash: "STILL1"),
+            episode("b", series: "s1", season: 1, number: 2, bytes: 1, posterThumbhash: "STILL2", seriesPosterThumbhash: "SERIES"),
+        ])
+        XCTAssertEqual(withSeriesPoster.first?.posterThumbhash, "SERIES")
+
+        // Downloads made before the server sent series posters keep a still.
+        let olderDownloads = groups([episode("a", series: "s1", season: 1, number: 1, bytes: 1, posterThumbhash: "STILL1")])
+        XCTAssertEqual(olderDownloads.first?.posterThumbhash, "STILL1")
     }
 
     func testSeasonsAreNewestFirstWithSpecialsLast() {

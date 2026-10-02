@@ -322,15 +322,15 @@ struct DownloadSelectionCircle: View {
     }
 }
 
-/// A 2:3 poster tile sized for a Manager / browse row.
-struct DownloadPosterThumb: View {
+/// Downloaded artwork filling its frame: the image on local disk drawn over
+/// its thumbhash, which stays visible until the file loads or when there is
+/// none.
+struct DownloadArtworkImage: View {
     let thumbhash: String?
-    /// Poster image on local disk, fetched by the download pipeline before
-    /// the media transfer starts — drawn over the thumbhash placeholder so
-    /// in-progress rows aren't a blank tile for the whole transfer.
-    var fileURL: URL? = nil
-    var width: CGFloat = 40
-    var corner: CGFloat = 7
+    /// Image on local disk, fetched by the download pipeline before the media
+    /// transfer starts, so in-progress rows aren't a placeholder for the whole
+    /// transfer.
+    let fileURL: URL?
 
     var body: some View {
         ZStack {
@@ -343,8 +343,20 @@ struct DownloadPosterThumb: View {
                 }
             }
         }
-        .frame(width: width, height: width * 1.5)
-        .clipShape(RoundedRectangle(cornerRadius: corner, style: .continuous))
+    }
+}
+
+/// A 2:3 poster tile sized for a Manager / browse row.
+struct DownloadPosterThumb: View {
+    let thumbhash: String?
+    var fileURL: URL? = nil
+    var width: CGFloat = 40
+    var corner: CGFloat = 7
+
+    var body: some View {
+        DownloadArtworkImage(thumbhash: thumbhash, fileURL: fileURL)
+            .frame(width: width, height: width * 1.5)
+            .clipShape(RoundedRectangle(cornerRadius: corner, style: .continuous))
     }
 }
 #endif

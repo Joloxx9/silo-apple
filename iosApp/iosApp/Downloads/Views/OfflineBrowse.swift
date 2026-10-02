@@ -63,6 +63,7 @@ struct OfflineSeriesBrowseView: View {
                     title: group.title,
                     eyebrow: heroEyebrow(group),
                     posterThumbhash: group.posterThumbhash,
+                    posterFileURL: manager.seriesPosterImageURL(for: group),
                     availability: "Downloaded · \(group.episodeCount) episode\(group.episodeCount == 1 ? "" : "s") · \(DownloadFormatting.bytes(group.totalBytes))",
                     isMonitored: group.isMonitored,
                     playTitle: playTitle(season),
@@ -441,6 +442,7 @@ private struct OfflineBrowseHero: View {
     let title: String
     let eyebrow: String
     let posterThumbhash: String?
+    let posterFileURL: URL?
     let availability: String
     var isMonitored: Bool = false
     let playTitle: String
@@ -449,7 +451,7 @@ private struct OfflineBrowseHero: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 13) {
             HStack(alignment: .bottom, spacing: 14) {
-                DownloadPosterThumb(thumbhash: posterThumbhash, width: 72, corner: 10)
+                DownloadPosterThumb(thumbhash: posterThumbhash, fileURL: posterFileURL, width: 72, corner: 10)
                 VStack(alignment: .leading, spacing: 6) {
                     HStack(spacing: 7) {
                         Text(eyebrow)

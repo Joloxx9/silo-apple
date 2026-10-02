@@ -200,6 +200,9 @@ struct OfflineManifest: Codable, Hashable, Sendable {
 
     let posterThumbhash: String?
     let backdropThumbhash: String?
+    /// Episode manifests only: the parent series poster. An episode's own
+    /// poster is its still.
+    let seriesPosterThumbhash: String?
     let artworkUrls: ArtworkUrls?
 
     let container: String?
@@ -262,6 +265,7 @@ struct OfflineManifest: Codable, Hashable, Sendable {
         case episodeNumber
         case posterThumbhash
         case backdropThumbhash
+        case seriesPosterThumbhash
         case artworkUrls
         case container
         case codecVideo
@@ -310,6 +314,7 @@ struct OfflineManifest: Codable, Hashable, Sendable {
         episodeNumber = try keyed.decodeIfPresent(Int.self, forKey: .episodeNumber)
         posterThumbhash = try keyed.decodeIfPresent(String.self, forKey: .posterThumbhash)
         backdropThumbhash = try keyed.decodeIfPresent(String.self, forKey: .backdropThumbhash)
+        seriesPosterThumbhash = try keyed.decodeIfPresent(String.self, forKey: .seriesPosterThumbhash)
         artworkUrls = try keyed.decodeIfPresent(ArtworkUrls.self, forKey: .artworkUrls)
         container = try keyed.decodeIfPresent(String.self, forKey: .container)
         codecVideo = try keyed.decodeIfPresent(String.self, forKey: .codecVideo)
@@ -356,6 +361,7 @@ struct OfflineManifest: Codable, Hashable, Sendable {
         try keyed.encodeIfPresent(episodeNumber, forKey: .episodeNumber)
         try keyed.encodeIfPresent(posterThumbhash, forKey: .posterThumbhash)
         try keyed.encodeIfPresent(backdropThumbhash, forKey: .backdropThumbhash)
+        try keyed.encodeIfPresent(seriesPosterThumbhash, forKey: .seriesPosterThumbhash)
         try keyed.encodeIfPresent(artworkUrls, forKey: .artworkUrls)
         try keyed.encodeIfPresent(container, forKey: .container)
         try keyed.encodeIfPresent(codecVideo, forKey: .codecVideo)
@@ -381,6 +387,8 @@ struct OfflineManifest: Codable, Hashable, Sendable {
         let poster: String?
         let backdrop: String?
         let logo: String?
+        /// Episode manifests only; see `seriesPosterThumbhash`.
+        let seriesPoster: String?
     }
 }
 
@@ -580,6 +588,9 @@ struct DownloadRecord: Codable, Identifiable, Hashable, Sendable {
     var posterFilename: String?
     var backdropFilename: String?
     var logoFilename: String?
+    /// The parent series poster of an episode download. Default `nil` keeps
+    /// Codable backward-compatible with stores written before it existed.
+    var seriesPosterFilename: String? = nil
     /// Manifest `fetch_url` → relative on-disk filename.
     var subtitleFilenames: [String: String]
     /// Persisted `cancel(byProducingResumeData:)` blob for a paused
@@ -602,6 +613,8 @@ struct DownloadRecord: Codable, Identifiable, Hashable, Sendable {
     var seasonNumber: Int? = nil
     var episodeNumber: Int? = nil
     var posterThumbhash: String?
+    /// ThumbHash of the parent series poster, for an episode download.
+    var seriesPosterThumbhash: String? = nil
     var container: String?               // media container, drives file ext + engine
 
     var stableIdentity: StableIdentity?
@@ -618,6 +631,10 @@ struct DownloadRecord: Codable, Identifiable, Hashable, Sendable {
     /// the server sends one. A finished transfer of any other size is
     /// discarded and downloaded again.
     var expectedBytes: Int64? = nil
+
+    /// ThumbHash for the record's 2:3 poster tile: an episode's series
+    /// poster, since its own poster is the episode still.
+    var tileThumbhash: String? { seriesPosterThumbhash ?? posterThumbhash }
 
     var isPlayableOffline: Bool {
         (localStatus == .completed || localStatus == .revoked) && mediaFilename != nil

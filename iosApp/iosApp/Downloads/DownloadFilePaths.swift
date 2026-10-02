@@ -15,7 +15,7 @@ import OSLog
 ///   <downloadId>/
 ///     media.<ext>
 ///     manifest.json
-///     poster.jpg | backdrop.jpg | logo.png
+///     poster.jpg | backdrop.jpg | logo.png | series_poster.jpg
 ///     sub_<n>.<ext>
 /// ```
 ///
