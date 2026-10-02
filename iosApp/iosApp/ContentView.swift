@@ -355,7 +355,7 @@ struct ContentView: View {
                 // The one hydration whose outcome is never optional: `clear()`
                 // above guarantees a real fetch, so the wrapper's
                 // short-circuit case cannot apply here and a failure leaves
-                // every card — including the admin kill switch — on registry
+                // every card — including the server-wide overlay default — on registry
                 // defaults for a server the user just switched to.
                 await hydrateOverlayPrefs(phase: "server_switch_hydrate")
                 #if os(iOS) || os(tvOS)
@@ -490,8 +490,8 @@ struct ContentView: View {
 
     /// Overlay hydration is the one post-authentication refresh whose failure
     /// is silently sticky: `hydrateIfNeeded()` leaves `hasHydrated == false`
-    /// and every card renders from registry defaults — including the admin
-    /// kill switch — until a later foreground happens to succeed. Wrapping the
+    /// and every card renders from registry defaults — including the
+    /// server-wide overlay default — until a later foreground happens to succeed. Wrapping the
     /// single funnel both call sites already share turns "my badges are wrong"
     /// into a dated line with an outcome.
     ///

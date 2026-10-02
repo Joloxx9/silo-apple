@@ -54,7 +54,7 @@ extension SiloAPI {
 
     // MARK: Read
 
-    /// The server-wide card overlay config: the admin kill switch and the
+    /// The server-wide card overlay config: the overlay on/off default and the
     /// optional baseline document for profiles that have not customized.
     /// Needs no profile; the server caches it for 60s.
     func overlayConfig() async throws -> APIv2OverlayConfig {
