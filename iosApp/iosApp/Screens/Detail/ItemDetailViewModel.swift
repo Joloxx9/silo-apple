@@ -1230,6 +1230,10 @@ class ItemDetailViewModel {
         episodes: [], previousSeason: nil, nextSeason: nil
     )
 
+    /// Bumped when watched changes drop neighbouring pages, so the Series rail
+    /// reloads them.
+    private(set) var episodePagesRevision = 0
+
     private func updateSeriesEpisodeWindow() {
         seriesEpisodeWindow = SeriesEpisodeWindow.snapshot(
             seasons: seasons, selected: selectedSeason?.seasonNumber, pages: episodesBySeason
@@ -1527,7 +1531,18 @@ class ItemDetailViewModel {
         isWatched = requested
         let outcome = await dispatchPersonalState(.watched, contentId: contentId, to: requested)
         if outcome == .applied {
+            let isSeries = detail?.type == "series" && detail?.contentId == contentId
+            #if os(tvOS)
+            if isSeries {
+                // The stale-detail reload below must keep the season on screen,
+                // not re-pick the first unwatched one.
+                initialResumeSeasonNumber = selectedSeason?.seasonNumber ?? initialResumeSeasonNumber
+            }
+            #endif
             invalidateRelatedCaches(contentId: contentId)
+            if isSeries {
+                await refreshWatchedSeries(seriesId: contentId)
+            }
         } else {
             if isWatched == requested { isWatched = !requested }
             personalStateNotice = PersonalStateNotice(outcome)
@@ -1592,6 +1607,30 @@ class ItemDetailViewModel {
             )
         }
         return .applied
+    }
+
+    /// A series change reaches every season. Drop the other seasons' pages and
+    /// cached reads so whichever loads them next (a chip tap, the iOS page
+    /// prefetch, the tvOS rail's neighbour load) fetches the new state, then
+    /// refresh the selected season like a season change.
+    private func refreshWatchedSeries(seriesId: String) async {
+        guard seriesContentId == seriesId, !Task.isCancelled,
+              let selectedNumber = selectedSeason?.seasonNumber else { return }
+        #if !os(tvOS)
+        // A page read before the write must not land after this refresh.
+        stopEpisodePagePrefetch()
+        #endif
+        for season in seasons where season.seasonNumber != selectedNumber {
+            ResponseCache.shared.remove(CacheKey.itemEpisodes(
+                seriesId: seriesId, seasonNumber: season.seasonNumber, libraryId: libraryId
+            ))
+        }
+        episodesBySeason = episodesBySeason.filter { $0.key == selectedNumber }
+        #if os(tvOS)
+        // Restarts the rail's neighbour load, cancelling any read begun before the write.
+        episodePagesRevision &+= 1
+        #endif
+        await refreshWatchedSeason(seriesId: seriesId, seasonNumber: selectedNumber)
     }
 
     private func refreshWatchedSeason(seriesId: String, seasonNumber: Int) async {

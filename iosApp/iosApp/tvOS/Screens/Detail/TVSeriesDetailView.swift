@@ -181,7 +181,10 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
     let detail: ItemDetail
     let isFavorite: Bool
     let inWatchlist: Bool
-    let isWatched: Bool
+    /// Whole-series state for More's series entry.
+    let isSeriesWatched: Bool
+    /// The selected season's state for More's season entry.
+    let isSeasonWatched: Bool
     let seasons: [Season]
     let selectedSeason: Season?
     let episodes: [EpisodeListItem]
@@ -225,7 +228,8 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
     let onSelectNextUpSubtitleTrack: (Int?) -> Void
     let onToggleFavorite: () -> Void
     let onToggleWatchlist: () -> Void
-    let onToggleWatched: () -> Void
+    let onToggleSeriesWatched: () -> Void
+    let onToggleSeasonWatched: () -> Void
     let onPersonTap: (String) -> Void
     let onNavigateToItem: (String) -> Void
     @ViewBuilder let belowSynopsis: () -> BelowSynopsis
@@ -896,7 +900,7 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
     }
 
     private enum MoreAction: String {
-        case watchParty, overview, favorite, watched, trailers
+        case watchParty, overview, favorite, seriesWatched, watched, trailers
     }
 
     @Environment(AppRouter.self) private var partyRouter
@@ -921,11 +925,16 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
                     title: isFavorite ? "Remove from Favorites" : "Add to Favorites",
                     systemImage: isFavorite ? "heart.fill" : "heart"
                 ))
+                items.append(TVActionPopoverItem(
+                    id: MoreAction.seriesWatched.rawValue,
+                    title: isSeriesWatched ? "Mark Series Unwatched" : "Mark Series Watched",
+                    systemImage: isSeriesWatched ? "checkmark.circle.fill" : "checkmark.circle"
+                ))
                 if selectedSeason != nil {
                     items.append(TVActionPopoverItem(
                         id: MoreAction.watched.rawValue,
-                        title: isWatched ? "Mark Season Unwatched" : "Mark Season Watched",
-                        systemImage: isWatched ? "checkmark.circle.fill" : "checkmark.circle"
+                        title: isSeasonWatched ? "Mark Season Unwatched" : "Mark Season Watched",
+                        systemImage: isSeasonWatched ? "checkmark.circle.fill" : "checkmark.circle"
                     ))
                 }
                 if supportsTrailerFetch {
@@ -952,7 +961,8 @@ struct TVSeriesDetailView<BelowSynopsis: View>: View {
                     }
                 case .overview: showSeriesOverview()
                 case .favorite: onToggleFavorite()
-                case .watched: onToggleWatched()
+                case .seriesWatched: onToggleSeriesWatched()
+                case .watched: onToggleSeasonWatched()
                 case .trailers: onFindTrailers()
                 case .none: break
                 }
