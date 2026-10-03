@@ -4951,6 +4951,24 @@ class PlayerViewModel {
                 // can pick the right track without another fetch. Skip
                 // entirely if the caller already passed an explicit
                 // subtitle index — manual override always wins.
+                // An index that names an external track is not an FFmpeg
+                // stream index. The catalog reports a sidecar's own ordinal in
+                // the same field embedded tracks use for their stream index,
+                // so a sidecar picked on the item card arrives here looking
+                // like an explicit embedded choice. Honouring it selects a
+                // stream the file does not have, and it suppresses the
+                // resolver that would otherwise restore the pick from the
+                // stored signature. Drop the index and let the resolver run.
+                if self.hasExplicitSubtitleChoice,
+                   let bogusIndex = self.pendingSubtitleFfIndex,
+                   Self.namesExternalSubtitle(
+                       bogusIndex,
+                       in: prepared.selectedVersion.subtitleTracks
+                   ) {
+                    self.pendingSubtitleFfIndex = nil
+                    self.hasExplicitSubtitleChoice = false
+                    Self.logger.info("[CMP-SUB] ignoring external subtitle ordinal offered as an embedded index=\(bogusIndex, privacy: .public)")
+                }
                 if !self.hasExplicitSubtitleChoice {
                     self.prefsForCurrentItem = self.settings.subtitleMatchesSystemAppearance
                         ? self.systemCaptionPrefsSnapshot()
@@ -8567,6 +8585,21 @@ class PlayerViewModel {
         return trackId
     }
 
+    /// Whether `index` names an external subtitle row rather than an embedded
+    /// FFmpeg stream.
+    ///
+    /// The catalog reports an external sidecar's own ordinal in the same field
+    /// embedded tracks use for their stream index, so a sidecar picked on the
+    /// item card reaches playback looking like an explicit embedded choice.
+    /// `-1` is the explicit "Off" sentinel and never names a track.
+    nonisolated static func namesExternalSubtitle(
+        _ index: Int?,
+        in tracks: [SubtitleTrack]?
+    ) -> Bool {
+        guard let index, index >= 0, let tracks else { return false }
+        return tracks.first(where: { $0.selectionIndex == index })?.external == true
+    }
+
     private func applyAutoSubtitlePreferencesIfNeeded(forceReevaluation: Bool = false) {
         guard !hasExplicitSubtitleChoice, let prefs = prefsForCurrentItem else { return }
         if prefsResolvedForCurrentItem && !forceReevaluation {
@@ -8597,6 +8630,7 @@ class PlayerViewModel {
         // An empty callback still has to clear a server-seeded automatic
         // selection in device-settings mode, but it must not latch the
         // resolver: embedded or sidecar tracks can arrive in a later update.
+        //
         prefsResolvedForCurrentItem = !allSubs.isEmpty
         applyAutoSubtitle(pick)
     }
