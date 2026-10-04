@@ -1260,6 +1260,76 @@ final class AetherPlaybackBoundaryTests: XCTestCase {
         XCTAssertFalse(controller.engine.subtitleCues.contains(where: { $0.text == "Native track 1" }))
     }
 
+    /// After a timing change, the showing sidecar is registered again and
+    /// Aether clears its cues to decode the file anew. The cue hold keeps the
+    /// renderers on the old cues until the new ones are decoded, so the swap
+    /// has no blank gap; picking another track ends the hold at once.
+    func testReloadingAShowingSidecarHoldsItsCuesUntilTheNewOnesDecode() async throws {
+        let controller = try AetherPlaybackController()
+        defer { controller.stop() }
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("cue-hold-\(UUID().uuidString).srt")
+        try "1\n00:00:01,000 --> 00:00:03,000\nHeld line\n\n".write(to: url, atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(at: url) }
+        let appID = SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: 7)
+        controller.addExternalSubtitleTrack(ExternalSubtitleTrack(url: url), appTrackID: appID)
+        controller.selectSubtitleTrack(id: appID)
+        try await waitForCondition { !controller.engine.subtitleCues.isEmpty }
+
+        XCTAssertTrue(controller.reloadExternalSubtitleTrack(appTrackID: appID, primary: true, secondary: false))
+        XCTAssertTrue(controller.engine.subtitleCues.isEmpty, "Aether clears the cues while it fetches the file again")
+        XCTAssertTrue(controller.cueHold.holds(.primary, trackID: controller.engine.activeSubtitleTrackIndex),
+                      "so the renderers hold the ones on screen")
+        XCTAssertFalse(controller.cueHold.isHolding(.secondary), "the secondary stream was not reloaded")
+        try await waitForCondition { !controller.engine.subtitleCues.isEmpty && !controller.cueHold.isHolding(.primary) }
+        XCTAssertFalse(controller.cueHold.isHolding(.primary), "the hold ends once the new cues are decoded")
+
+        XCTAssertTrue(controller.reloadExternalSubtitleTrack(appTrackID: appID, primary: true, secondary: false))
+        XCTAssertTrue(controller.cueHold.isHolding(.primary))
+        controller.selectSubtitleTrack(id: nil)
+        XCTAssertFalse(controller.cueHold.isHolding(.primary), "turning subtitles off must not keep old cues up")
+    }
+
+    /// With preferred subtitle languages, a sidecar that is not showing cannot
+    /// be registered again when its timing changes, since registering may
+    /// select a track on its own. It is registered again when it is next
+    /// selected, so Aether fetches the new timing instead of reusing the old
+    /// decode.
+    func testSidecarWhoseTimingChangedWhileHiddenIsFetchedAgainWhenSelected() throws {
+        let controller = try AetherPlaybackController()
+        defer { controller.stop() }
+        let media = URL(string: "https://media.example.test/movie.mkv")!
+        _ = controller.beginLoad(try AetherLoadSpec(directURL: media, headers: [:], startPosition: 0,
+                                                    audioOnly: false, preferredSubtitleLanguages: ["eng"]))
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("stale-\(UUID().uuidString).srt")
+        try "1\n00:00:01,000 --> 00:00:03,000\nLine\n\n".write(to: url, atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(at: url) }
+        let appID = SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: 7)
+        controller.addExternalSubtitleTrack(ExternalSubtitleTrack(url: url), appTrackID: appID)
+        let firstID = try XCTUnwrap(controller.aetherSubtitleID(forAppID: appID))
+
+        XCTAssertFalse(controller.reloadExternalSubtitleTrack(appTrackID: appID, primary: false, secondary: false))
+        XCTAssertEqual(controller.aetherSubtitleID(forAppID: appID), firstID, "nothing is registered while hidden")
+
+        controller.selectSubtitleTrack(id: appID)
+        let secondID = try XCTUnwrap(controller.aetherSubtitleID(forAppID: appID))
+        XCTAssertNotEqual(secondID, firstID, "selecting it registers the file again")
+        XCTAssertEqual(controller.engine.activeSubtitleTrackIndex, secondID)
+        XCTAssertFalse(controller.engine.subtitleTracks.contains { $0.id == firstID })
+        XCTAssertFalse(controller.cueHold.isHolding(.primary), "another track's cues are not held")
+
+        controller.selectSubtitleTrack(id: nil)
+        controller.selectSubtitleTrack(id: appID)
+        XCTAssertEqual(controller.aetherSubtitleID(forAppID: appID), secondID, "only once")
+    }
+
+    private func waitForCondition(timeout: TimeInterval = 5, _ condition: () -> Bool) async throws {
+        let deadline = Date().addingTimeInterval(timeout)
+        while !condition(), Date() < deadline {
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+        XCTAssertTrue(condition(), "timed out waiting")
+    }
+
     func testMovieTimelineUsesExternalTrackStateWithoutRequiringAnAlias() throws {
         let controller = try AetherPlaybackController()
         defer { controller.stop() }

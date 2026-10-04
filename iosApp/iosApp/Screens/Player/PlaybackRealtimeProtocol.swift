@@ -56,6 +56,13 @@ enum PlaybackRealtimeEventName: Codable, Equatable {
     case subtitleTranslationCompleted
     case subtitleTranslationFailed
     case subtitleReady
+    /// A subtitle of the file (stored or a sidecar) was retimed: a sync was
+    /// applied, or its timing was set or reset. Its stream URL is unchanged
+    /// and already serves the new timing.
+    case subtitleTimingChanged
+    /// A sync job of one of the file's subtitles was queued, progressed, or
+    /// ended.
+    case subtitleSyncUpdated
     /// Any event name not recognized above. Carries the raw wire string so
     /// nothing is lost; current consumers ignore it.
     case unknown(String)
@@ -70,6 +77,8 @@ enum PlaybackRealtimeEventName: Codable, Equatable {
         case .subtitleTranslationCompleted: return "subtitle_translation_completed"
         case .subtitleTranslationFailed: return "subtitle_translation_failed"
         case .subtitleReady: return "subtitle_ready"
+        case .subtitleTimingChanged: return "subtitle_timing_changed"
+        case .subtitleSyncUpdated: return "subtitle_sync_updated"
         case .unknown(let raw): return raw
         }
     }
@@ -83,6 +92,8 @@ enum PlaybackRealtimeEventName: Codable, Equatable {
         case "subtitle_translation_completed": self = .subtitleTranslationCompleted
         case "subtitle_translation_failed": self = .subtitleTranslationFailed
         case "subtitle_ready": self = .subtitleReady
+        case "subtitle_timing_changed": self = .subtitleTimingChanged
+        case "subtitle_sync_updated": self = .subtitleSyncUpdated
         default: self = .unknown(rawValue)
         }
     }
@@ -200,10 +211,13 @@ extension Dictionary where Key == String, Value == PlaybackRealtimeValue {
         return nil
     }
 
+    /// The first of `keys` holding a number, truncated toward zero as
+    /// before; nil when that number is not finite or no `Int` can hold it,
+    /// rather than trapping on a malformed event.
     func int(forKeys keys: String...) -> Int? {
         for key in keys {
             if case .number(let value)? = self[key], value.isFinite {
-                return Int(value)
+                return Int(exactly: value.rounded(.towardZero))
             }
         }
         return nil
@@ -313,6 +327,74 @@ struct PlaybackRealtimeMarkersUpdatedPayload: Equatable {
         creditsUpdate = payload.markerRangeUpdate(forKey: "credits")
         self.intro = introUpdate.range
         self.credits = creditsUpdate.range
+    }
+}
+
+/// `subtitle_timing_changed`: `{session_id, file_id, sync_key, subtitle_id?,
+/// track?}`. The sync key is all a player needs; `track` is not read. A
+/// server that predates sync keys sends only `subtitle_id`, which names a
+/// stored subtitle.
+struct PlaybackRealtimeSubtitleTimingChangedPayload: Equatable {
+    let sessionId: String?
+    let fileId: Int
+    let syncKey: String
+    /// The stored subtitle's ID; absent for a sidecar.
+    let subtitleId: String?
+
+    init?(payload: PlaybackRealtimePayload) {
+        guard let fileId = payload.int(forKeys: "file_id", "fileId") else { return nil }
+        let subtitleId = payload.subtitleSyncStoredId()
+        guard let syncKey = payload.subtitleSyncKey() ?? subtitleId.map(SubtitleSyncState.storedKey) else {
+            return nil
+        }
+        sessionId = payload.string(forKeys: "session_id", "sessionId")
+        self.fileId = fileId
+        self.syncKey = syncKey
+        self.subtitleId = subtitleId
+    }
+}
+
+/// `subtitle_sync_updated`: `{session_id, file_id, sync_key, subtitle_id?,
+/// timing, job}`, sent at each step of a sync job: queued, every progress
+/// update, and the outcome. `job` has the `SubtitleSyncJobState` shape.
+struct PlaybackRealtimeSubtitleSyncUpdatedPayload: Equatable {
+    let sessionId: String?
+    let fileId: Int
+    let syncKey: String
+    let subtitleId: String?
+    /// The subtitle's correction after this step.
+    let timing: SubtitleTiming
+    let job: SubtitleSyncJob
+
+    init?(payload: PlaybackRealtimePayload) {
+        guard let fileId = payload.int(forKeys: "file_id", "fileId"),
+              let syncKey = payload.subtitleSyncKey(),
+              case .object(let timing)? = payload["timing"],
+              case .number(let offset)? = timing["offset_ms"], let offsetMs = Int(exactly: offset),
+              SubtitleTiming.offsetRange.contains(offsetMs),
+              case .number(let scale)? = timing["scale"], SubtitleTiming.scaleRange.contains(scale),
+              let jobValue = payload["job"],
+              let jobData = try? JSONEncoder().encode(jobValue),
+              let job = try? HTTPClient.makeJSONDecoder().decode(SubtitleSyncJob.self, from: jobData),
+              !job.id.isEmpty else {
+            return nil
+        }
+        sessionId = payload.string(forKeys: "session_id", "sessionId")
+        self.fileId = fileId
+        self.syncKey = syncKey
+        subtitleId = payload.subtitleSyncStoredId()
+        self.timing = SubtitleTiming(offsetMs: offsetMs, scale: scale)
+        self.job = job
+    }
+}
+
+private extension Dictionary where Key == String, Value == PlaybackRealtimeValue {
+    func subtitleSyncKey() -> String? {
+        string(forKeys: "sync_key", "syncKey").flatMap { $0.isEmpty ? nil : $0 }
+    }
+
+    func subtitleSyncStoredId() -> String? {
+        int(forKeys: "subtitle_id", "subtitleId").flatMap { $0 > 0 ? String($0) : nil }
     }
 }
 
