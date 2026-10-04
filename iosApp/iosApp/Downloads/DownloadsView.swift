@@ -57,6 +57,7 @@ struct DownloadsView: View {
         .toolbar { toolbarContent }
         .safeAreaInset(edge: .bottom) { bottomBar }
         .sheet(isPresented: $showReclaim) { DownloadReclaimSheet() }
+        .task { await AutoDownloadSchedule.shared.refresh() }
         // An alert, not a confirmation dialog: on iPhone the dialog anchors
         // to this whole page and appears at its top, far from the row or
         // bottom bar that asked for it.
@@ -92,6 +93,14 @@ struct DownloadsView: View {
     /// Mirrors `EmptyStateView` but adds a route into content: an empty
     /// Downloads tab is most often a brand-new user, so hand them the
     /// browse entry point rather than a dead end.
+    /// Points to monitoring too, since its list is reached from here only
+    /// once something is downloaded or monitored.
+    private var noDownloadsHint: String {
+        let base = "Downloaded movies and episodes appear here for offline viewing."
+        guard manager.canMonitorSeries else { return base }
+        return base + " To get new episodes automatically, open a series, tap Download, and choose Monitor."
+    }
+
     private var noDownloadsState: some View {
         VStack(spacing: 12) {
             Image(systemName: "arrow.down.circle")
@@ -100,7 +109,7 @@ struct DownloadsView: View {
             Text("No Downloads")
                 .font(.siloSubheadline)
                 .foregroundColor(.siloOnSurface)
-            Text("Downloaded movies and episodes appear here for offline viewing.")
+            Text(noDownloadsHint)
                 .font(.siloCaption)
                 .foregroundColor(.siloSecondaryText)
                 .multilineTextAlignment(.center)
@@ -141,6 +150,17 @@ struct DownloadsView: View {
                         bytes: manager.reclaimableBytes
                     ) { showReclaim = true }
                     .downloadGroupedRow(.last, separatorInset: 16)
+                }
+
+                if showsAutoDownloads {
+                    AutoDownloadsEntryRow(
+                        count: manager.subscriptions.count,
+                        nextEpisodeDay: nextAutoDownloadDay
+                    ) {
+                        router.navigate(to: .autoDownloads)
+                    }
+                    .downloadGroupedRow(.only)
+                    .padding(.top, 12)
                 }
 
                 if !manager.activeRecords.isEmpty {
@@ -231,8 +251,6 @@ struct DownloadsView: View {
                         .downloadGroupInset()
                 }
 
-                monitoredOnlySection
-
                 Color.clear.frame(height: 24)
             }
             .padding(.bottom, 8)
@@ -293,50 +311,30 @@ struct DownloadsView: View {
         }
     }
 
-    /// Monitored series that have no on-device episodes yet, so an active
-    /// subscription is still visible (and stoppable) before its first download.
-    @ViewBuilder
-    private var monitoredOnlySection: some View {
-        let groupedSeriesIds = Set(manager.seriesGroups.map(\.seriesId))
-        let pending = manager.subscriptions.filter { !groupedSeriesIds.contains($0.seriesId) }
-        if !pending.isEmpty {
-            DownloadSectionHeader(title: "Monitoring", count: pending.count)
-            ForEach(Array(pending.enumerated()), id: \.element.id) { index, subscription in
-                monitoredRow(subscription, position: DownloadGroupPosition(index: index, count: pending.count))
-                    .downloadGroupInset()
-            }
-        }
+    /// The Auto-Downloads row shows wherever monitoring is offered, and
+    /// whenever monitors exist, so they stay reachable.
+    private var showsAutoDownloads: Bool {
+        !isSelecting && (manager.canMonitorSeries || !manager.subscriptions.isEmpty)
     }
 
-    private func monitoredRow(
-        _ subscription: DownloadSubscription,
-        position: DownloadGroupPosition
-    ) -> some View {
-        HStack(spacing: 12) {
-            Image(systemName: "antenna.radiowaves.left.and.right")
-                .font(.system(size: 17))
-                .foregroundColor(.siloOnSurface)
-                .frame(width: 40, height: 40)
-            VStack(alignment: .leading, spacing: 3) {
-                Text(subscription.seriesTitle ?? subscription.seriesId)
-                    .font(.system(size: 16, weight: .semibold))
-                    .foregroundColor(.siloOnSurface)
-                    .lineLimit(1)
-                Text(SubscriptionMode(rawValue: subscription.mode)?.displayName ?? subscription.mode)
-                    .font(.subheadline)
-                    .foregroundColor(.siloSecondaryText)
+    /// When the soonest episode an active monitor covers airs, e.g. "Thursday".
+    private var nextAutoDownloadDay: String? {
+        let schedule = AutoDownloadSchedule.shared
+        let next = manager.subscriptions
+            .filter(\.active)
+            .compactMap { subscription -> UpcomingEpisode? in
+                guard let mode = SubscriptionMode(rawValue: subscription.mode) else { return nil }
+                return AutoDownloadRules.nextEpisode(
+                    mode: mode,
+                    targetSeason: subscription.targetSeason,
+                    seasonNumbers: subscription.seasonNumbers,
+                    upcoming: schedule.upcoming(forSeriesId: subscription.seriesId),
+                    excluding: manager.knownEpisodeIds(forSeriesId: subscription.seriesId)
+                )
             }
-            Spacer(minLength: 8)
-        }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 10)
-        .downloadGroupSlice(position)
-        .contextMenu {
-            Button(role: .destructive) {
-                Task { await manager.deleteSubscription(id: subscription.id) }
-            } label: {
-                Label("Stop Monitoring", systemImage: "xmark.circle")
-            }
+            .min { $0.airDate < $1.airDate }
+        return next.map {
+            AutoDownloadRules.relativeDay($0.airDate, now: Date(), calendar: .current, preposition: false)
         }
     }
 

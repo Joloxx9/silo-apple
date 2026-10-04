@@ -193,6 +193,20 @@ final class DownloadManager {
     private var legacyRemovalIncomplete = false
     /// The running pass over `file.pendingServerDeletes`, if any.
     private var serverDeleteTask: Task<Void, Never>?
+    /// The running pass that reads display fields for untitled records.
+    private var displayFillTask: Task<Void, Never>?
+    /// Records arrived while a pass ran; another pass follows it.
+    private var displayFillRequested = false
+    /// Records whose display read failed in this scope; not read again until
+    /// the scope changes, so a lasting failure isn't retried every poll.
+    private var displayFillFailures: Set<String> = []
+    private var displayFillScope: ScopeKey?
+    /// The wait before another pass after one ended on a connection
+    /// failure; doubles up to five minutes and resets after a pass that
+    /// wasn't interrupted, or on a scope change.
+    private var displayFillRetryDelay: Duration = .seconds(15)
+    private var displayFillRetryTask: Task<Void, Never>?
+    private static let displayFillConcurrency = 4
     /// Records whose pending status event is being sent.
     private var statusReportsInFlight: Set<String> = []
     /// The running pass over `file.pendingSubscriptionDeletes`, if any.
@@ -313,6 +327,11 @@ final class DownloadManager {
         downloadedContentIds.contains(contentId) && downloadsEnabled
     }
 
+    /// Leaf content ids of downloads still on their way to this device, so
+    /// the Download sheet doesn't offer an episode already coming. Cached
+    /// like `downloadedContentIds` so progress ticks don't redraw views.
+    private(set) var inFlightContentIds: Set<String> = []
+
     private func rebuildDownloadedIndex() {
         // Revoked downloads keep their on-device file (playable offline),
         // so they badge the same as completed ones.
@@ -324,6 +343,15 @@ final class DownloadManager {
         if ids != downloadedContentIds {
             downloadedContentIds = ids
         }
+        let inFlight = Set(file.records.values.filter { $0.localStatus.isActive }.map(\.leafMediaItemId))
+        if inFlight != inFlightContentIds {
+            inFlightContentIds = inFlight
+        }
+    }
+
+    /// Capability-aware check mirroring `isDownloaded(contentId:)`.
+    func isInFlight(contentId: String) -> Bool {
+        inFlightContentIds.contains(contentId) && downloadsEnabled
     }
 
     /// The download record for a leaf content id (movie or episode), if any.
@@ -771,6 +799,8 @@ final class DownloadManager {
     private func deactivate() {
         pollTask?.cancel()
         pollTask = nil
+        displayFillRetryTask?.cancel()
+        displayFillRetryTask = nil
         abandonAllRestarts()
         progressHighWater.removeAll()
         pendingPauseIds.removeAll()
@@ -867,12 +897,13 @@ final class DownloadManager {
         )
     }
 
-    func downloadSeason(seriesId: String, seasonNumber: Int) async throws {
-        try await requestDownload(contentId: seriesId, series: true, seasonNumber: seasonNumber, seriesId: seriesId)
+    func downloadSeason(seriesId: String, seasonNumber: Int, quality: String? = nil) async throws {
+        try await requestDownload(contentId: seriesId, quality: quality, series: true, seasonNumber: seasonNumber,
+            seriesId: seriesId)
     }
 
-    func downloadSeries(seriesId: String) async throws {
-        try await requestDownload(contentId: seriesId, series: true, seriesId: seriesId)
+    func downloadSeries(seriesId: String, quality: String? = nil) async throws {
+        try await requestDownload(contentId: seriesId, quality: quality, series: true, seriesId: seriesId)
     }
 
     private func requestDownload(
@@ -915,9 +946,8 @@ final class DownloadManager {
         let isBatch = series || seasonNumber != nil
         do {
             if isBatch {
-                // Series/season batches are original-quality only per the
-                // server contract.
-                try await createSeriesPages(seriesId: contentId, seasonNumber: seasonNumber, owner: owner)
+                try await createSeriesPages(seriesId: contentId, seasonNumber: seasonNumber,
+                    quality: batchQuality(requestedQuality), owner: owner)
             } else {
                 let request = APIv2DownloadCreateRequest.single(
                     contentId: contentId,
@@ -949,12 +979,14 @@ final class DownloadManager {
     /// Registers a series or season one server page at a time. Every page
     /// repeats the same client-chosen batch id, and each page's entries are
     /// stored as soon as it arrives.
-    private func createSeriesPages(seriesId: String, seasonNumber: Int?, owner: ScopeOwner) async throws {
+    private func createSeriesPages(seriesId: String, seasonNumber: Int?, quality: String,
+                                   owner: ScopeOwner) async throws {
         let request = APIv2DownloadCreateRequest.seriesPage(
             seriesId: seriesId,
             seasonNumber: seasonNumber,
             batchId: UUID().uuidString.lowercased(),
-            caps: DownloadCaps.current()
+            caps: DownloadCaps.current(),
+            quality: quality
         )
         var cursor: String?
         var cursors: Set<String> = []
@@ -1012,6 +1044,7 @@ final class DownloadManager {
         persist()
         processQueue()
         ensurePolling()
+        fillMissingDisplay()
     }
 
     /// Decides what a failed create means for the user. `createDownloads` is
@@ -1060,6 +1093,23 @@ final class DownloadManager {
             return requestedQuality
         }
         return DownloadSettings.shared.resolvedFormat(allowedFormats: allowed)
+    }
+
+    /// Whether season and series batches take a quality other than original.
+    var canChooseBatchQuality: Bool { capability?.bulkQuality == true }
+
+    /// Whether monitors take a quality other than original.
+    var canChooseMonitorQuality: Bool { capability?.monitorQuality == true }
+
+    /// A batch's quality. A server without `bulkQuality` takes original only.
+    private func batchQuality(_ requestedQuality: String?) -> String {
+        canChooseBatchQuality ? resolvedDownloadQuality(requestedQuality) : DownloadFormat.original.rawValue
+    }
+
+    /// The quality a monitor write sends, or nil for a server without
+    /// `monitorQuality`, which would not accept the field.
+    private func monitorQuality(_ requestedQuality: String?) -> String? {
+        canChooseMonitorQuality ? resolvedDownloadQuality(requestedQuality) : nil
     }
 
     func deleteDownload(id: String) {
@@ -1372,19 +1422,13 @@ final class DownloadManager {
         }
     }
 
-    private func applyManifestDisplay(_ manifest: OfflineManifest, recordId: String) {
-        guard var record = file.records[recordId] else { return }
+    /// The fields a list row shows. Never overwrites what the record
+    /// already has, and touches nothing the transfer depends on.
+    nonisolated static func applyDisplayFields(_ manifest: OfflineManifest, to record: inout DownloadRecord) {
         record.title = record.title ?? manifest.title
-        record.type = manifest.type
-        record.format = manifest.quality
-        record.effectiveQuality = manifest.effectiveQuality
-        record.deliveryFormat = manifest.deliveryFormat
-        record.targetBitrateKbps = manifest.targetBitrateKbps
-        record.revision = manifest.revision ?? record.revision
-        record.container = manifest.container
+        record.type = record.type ?? manifest.type
         record.posterThumbhash = record.posterThumbhash ?? manifest.posterThumbhash
-        record.seriesPosterThumbhash = manifest.seriesPosterThumbhash ?? record.seriesPosterThumbhash
-        record.stableIdentity = manifest.stableIdentity
+        record.seriesPosterThumbhash = record.seriesPosterThumbhash ?? manifest.seriesPosterThumbhash
         if let seriesId = manifest.seriesId { record.seriesId = seriesId }
         record.seriesTitle = record.seriesTitle ?? manifest.seriesTitle
         record.seasonNumber = record.seasonNumber ?? manifest.seasonNumber
@@ -1398,6 +1442,20 @@ final class DownloadManager {
                 record.subtitle = String(year)
             }
         }
+    }
+
+    private func applyManifestDisplay(_ manifest: OfflineManifest, recordId: String) {
+        guard var record = file.records[recordId] else { return }
+        Self.applyDisplayFields(manifest, to: &record)
+        record.type = manifest.type
+        record.format = manifest.quality
+        record.effectiveQuality = manifest.effectiveQuality
+        record.deliveryFormat = manifest.deliveryFormat
+        record.targetBitrateKbps = manifest.targetBitrateKbps
+        record.revision = manifest.revision ?? record.revision
+        record.container = manifest.container
+        record.seriesPosterThumbhash = manifest.seriesPosterThumbhash ?? record.seriesPosterThumbhash
+        record.stableIdentity = manifest.stableIdentity
         if record.fileSize <= 0, let size = manifest.fileSize { record.fileSize = size }
         record.expectedBytes = manifest.integrity?.expectedBytes
         file.records[recordId] = record
@@ -2228,6 +2286,127 @@ final class DownloadManager {
             applyTransferLimit()
             ensurePolling()
         }
+        fillMissingDisplay()
+    }
+
+    /// Season, series, and monitor entries arrive without a title or
+    /// artwork, and their manifest is otherwise read only once the file is
+    /// ready, which for a prepared quality can take an hour. The server
+    /// builds manifests for preparing entries too, so read each untitled
+    /// active record's manifest now for its display fields alone. One pass
+    /// runs at a time; a record that fails is tried again on the next pass.
+    private func fillMissingDisplay() {
+        guard displayFillTask == nil else {
+            displayFillRequested = true
+            return
+        }
+        displayFillRequested = false
+        if displayFillScope != loadedScope {
+            displayFillScope = loadedScope
+            displayFillFailures = []
+            displayFillRetryDelay = .seconds(15)
+            // The previous scope's retry neither applies here nor may hold
+            // back this scope's own.
+            displayFillRetryTask?.cancel()
+            displayFillRetryTask = nil
+        }
+        let ids = file.records.values
+            .filter {
+                $0.title == nil && $0.localStatus.isActive && $0.manifestFilename == nil
+                    && !displayFillFailures.contains($0.id)
+            }
+            .sorted { ($0.registeredAt, $0.id) < ($1.registeredAt, $1.id) }
+            .map(\.id)
+        guard !ids.isEmpty else { return }
+        displayFillTask = Task { [weak self] in
+            let interrupted = await self?.fillDisplay(ids) ?? false
+            guard let self else { return }
+            self.displayFillTask = nil
+            if interrupted {
+                self.scheduleDisplayFillRetry()
+            } else {
+                self.displayFillRetryDelay = .seconds(15)
+            }
+            if self.displayFillRequested { self.fillMissingDisplay() }
+        }
+    }
+
+    /// Tries again after a pass a connection failure ended, with backoff,
+    /// so an untitled download isn't left waiting on an unrelated trigger.
+    private func scheduleDisplayFillRetry() {
+        guard displayFillRetryTask == nil else { return }
+        let delay = displayFillRetryDelay
+        displayFillRetryDelay = min(delay * 2, .seconds(300))
+        let scope = loadedScope
+        displayFillRetryTask = Task { [weak self] in
+            try? await Task.sleep(for: delay)
+            // Whoever cancelled a retry also cleared it. Any other clears
+            // itself even when its scope is gone, so a finished task can't
+            // hold back the retries of a scope that comes back.
+            guard let self, !Task.isCancelled else { return }
+            self.displayFillRetryTask = nil
+            guard self.loadedScope == scope else { return }
+            self.fillMissingDisplay()
+        }
+    }
+
+    /// Reads the manifests a few at a time. Returns true when a connection
+    /// failure, timeout, or busy server ended the pass early.
+    private func fillDisplay(_ ids: [String]) async -> Bool {
+        guard let owner = await captureScopeOwner() else { return false }
+        let auth = owner.auth
+        let pending = ids.filter { id in file.records[id].map { $0.title == nil } ?? false }
+        var manifests: [String: OfflineManifest] = [:]
+        var interrupted = false
+        for start in stride(from: 0, to: pending.count, by: Self.displayFillConcurrency) {
+            guard isCurrent(owner), !interrupted else { break }
+            let batch = pending[start..<min(start + Self.displayFillConcurrency, pending.count)]
+            let results = await withTaskGroup(of: (String, Result<OfflineManifest, Error>).self) { group in
+                for id in batch {
+                    group.addTask {
+                        do {
+                            return (id, .success(try await SiloAPI.shared.apiV2Client.downloadManifest(id: id, auth: auth)))
+                        } catch {
+                            return (id, .failure(error))
+                        }
+                    }
+                }
+                var out: [(String, Result<OfflineManifest, Error>)] = []
+                for await result in group { out.append(result) }
+                return out
+            }
+            // A read that outlived its scope says nothing about the new one.
+            guard isCurrent(owner) else { return false }
+            for (id, result) in results {
+                switch result {
+                case .success(let manifest):
+                    manifests[id] = manifest
+                case .failure(let error):
+                    Self.logger.info("display read for \(id, privacy: .public) failed: \(String(describing: error), privacy: .public)")
+                    // A refusal of this download, or a manifest the app
+                    // can't use, is lasting. A connection failure, timeout,
+                    // or busy server would fail the rest too; a retry
+                    // follows.
+                    let unusable = (error as? DownloadRegistryError) == .unusableManifest
+                    if unusable || APIv2Client.downloadRegistryFailure(error) == .rejected {
+                        displayFillFailures.insert(id)
+                    } else {
+                        interrupted = true
+                    }
+                }
+            }
+        }
+        guard isCurrent(owner), !manifests.isEmpty else { return interrupted }
+        // One write for the pass: each write to `file` rebuilds the indexes.
+        var records = file.records
+        for (id, manifest) in manifests {
+            guard var record = records[id], record.title == nil else { continue }
+            Self.applyDisplayFields(manifest, to: &record)
+            records[id] = record
+        }
+        file.records = records
+        persist()
+        return interrupted
     }
 
     /// Splits server rows the store doesn't know into rows to import and rows
@@ -2520,7 +2699,8 @@ final class DownloadManager {
         mode: SubscriptionMode,
         seasonNumbers: [Int]?,
         deleteWatched: Bool,
-        maxStorageBytes: Int64
+        maxStorageBytes: Int64,
+        quality: String? = nil
     ) async throws {
         guard let owner = await captureScopeOwner() else { throw DownloadError.monitoringScopeChanged }
         let request = CreateSubscriptionRequest(
@@ -2528,7 +2708,8 @@ final class DownloadManager {
             mode: mode.rawValue,
             seasonNumbers: mode == .specificSeasons ? seasonNumbers : nil,
             deleteWatched: deleteWatched,
-            maxStorageBytes: maxStorageBytes
+            maxStorageBytes: maxStorageBytes,
+            quality: monitorQuality(quality)
         )
         // A monitor DELETE on the wire lands first, so a create for a series
         // the user just stopped does not answer with the monitor that DELETE
@@ -2563,7 +2744,8 @@ final class DownloadManager {
                 seasonNumbers: request.seasonNumbers,
                 deleteWatched: deleteWatched,
                 maxStorageBytes: maxStorageBytes,
-                active: true
+                active: true,
+                quality: request.quality == (monitor.quality ?? DownloadFormat.original.rawValue) ? nil : request.quality
             )
             return
         }
@@ -2597,7 +2779,9 @@ final class DownloadManager {
     /// Whether a stored monitor already has the options a create asked for.
     nonisolated static func monitorMatches(_ monitor: DownloadSubscription, _ request: CreateSubscriptionRequest) -> Bool {
         guard monitor.active, monitor.mode == request.mode, monitor.deleteWatched == request.deleteWatched,
-              monitor.maxStorageBytes == request.maxStorageBytes else { return false }
+              monitor.maxStorageBytes == request.maxStorageBytes,
+              request.quality.map({ $0 == (monitor.quality ?? DownloadFormat.original.rawValue) }) ?? true
+        else { return false }
         guard request.mode == SubscriptionMode.specificSeasons.rawValue else { return true }
         return Set(monitor.seasonNumbers ?? []) == Set(request.seasonNumbers ?? [])
     }
@@ -2611,7 +2795,8 @@ final class DownloadManager {
         seasonNumbers: [Int]? = nil,
         deleteWatched: Bool? = nil,
         maxStorageBytes: Int64? = nil,
-        active: Bool? = nil
+        active: Bool? = nil,
+        quality: String? = nil
     ) async throws {
         guard let owner = await captureScopeOwner() else { throw DownloadError.monitoringScopeChanged }
         guard let existing = file.subscriptions.first(where: { $0.id == id }) else { throw DownloadError.monitorRemoved }
@@ -2620,7 +2805,8 @@ final class DownloadManager {
             seasonNumbers: seasonNumbers,
             deleteWatched: deleteWatched,
             maxStorageBytes: maxStorageBytes,
-            active: active
+            active: active,
+            quality: quality.flatMap(monitorQuality)
         )
         let updated: ServerSubscription
         do {
@@ -3286,6 +3472,7 @@ final class DownloadManager {
         record.targetBitrateKbps = row.targetBitrateKbps
         record.revision = row.revision
         record.serverStatus = row.status
+        record.preparation = row.status == "preparing" ? row.preparation : nil
         if row.fileSize > 0, record.fileSize <= 0 {
             record.fileSize = row.fileSize
         }
@@ -3295,7 +3482,7 @@ final class DownloadManager {
     }
 
     private func makeRecord(from row: APIv2DownloadEntry, type: String?) -> DownloadRecord {
-        DownloadRecord(
+        var record = DownloadRecord(
             id: row.id,
             contentId: row.contentId,
             episodeId: row.episodeId,
@@ -3329,6 +3516,8 @@ final class DownloadManager {
             retryCount: 0,
             taskIdentifier: nil
         )
+        record.preparation = row.status == "preparing" ? row.preparation : nil
+        return record
     }
 
     nonisolated static func mapInitialStatus(_ serverStatus: String) -> LocalDownloadStatus {
@@ -3418,6 +3607,13 @@ final class DownloadManager {
     /// manifest hydrates `seriesId` — without the fallback, freshly synced
     /// episodes would bypass the cap entirely.
     private func capSeriesId(for record: DownloadRecord) -> String? {
+        Self.seriesKey(for: record)
+    }
+
+    /// The series a download belongs to. Episode rows registered by
+    /// subscription sync carry the series id in `contentId` until the
+    /// manifest hydrates `seriesId`.
+    nonisolated static func seriesKey(for record: DownloadRecord) -> String? {
         record.seriesId ?? (record.episodeId != nil ? record.contentId : nil)
     }
 
