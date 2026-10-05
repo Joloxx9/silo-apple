@@ -579,6 +579,13 @@ struct TVEpisodeCard: View {
             guard let playedOverride, refreshedValue == playedOverride else { return }
             self.playedOverride = nil
         }
+        .onChange(of: episode.userRating) { _, refreshedValue in
+            // Released once the payload agrees, like the overrides above. Held
+            // forever it would hide a rating changed elsewhere, because tvOS
+            // keeps these cards across visits.
+            guard case .some(let pending) = ratingOverride, refreshedValue == pending else { return }
+            self.ratingOverride = nil
+        }
         .onChange(of: initialIsFavorite) { _, refreshedValue in
             guard let favoriteOverride, refreshedValue == favoriteOverride else { return }
             self.favoriteOverride = nil

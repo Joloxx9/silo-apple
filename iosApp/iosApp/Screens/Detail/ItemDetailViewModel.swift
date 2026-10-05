@@ -312,6 +312,11 @@ class ItemDetailViewModel {
             // A Watched tap made while this request was in flight wins.
             if userStateMutationGeneration == userStateGeneration {
                 isWatched = enriched.userData?.played ?? false
+                // The optimistic rating only had to bridge its own write. This
+                // payload is authoritative, so release it: tvOS keeps a detail
+                // model across visits, and a kept override would hide a rating
+                // changed on another client for as long as the model lives.
+                ratingOverride = nil
             }
 
             #if os(tvOS)
@@ -1507,6 +1512,8 @@ class ItemDetailViewModel {
     /// they already have means to keep it, not to remove it.
     func setRating(_ stars: Int?) async {
         guard let contentId = detail?.contentId else { return }
+        userStateMutationGeneration += 1
+        let generation = userStateMutationGeneration
         let requested = stars
         ratingOverride = .some(requested)
         let owner = await currentPersonalStateOwner()
@@ -1522,9 +1529,14 @@ class ItemDetailViewModel {
         if outcome == .applied {
             invalidateRelatedCaches(contentId: contentId)
         } else {
-            // Drop the override so the control falls back to the server's
-            // last known rating rather than showing a write that never landed.
-            ratingOverride = nil
+            // Drop the override so the control falls back to the server's last
+            // known rating rather than showing a write that never landed — but
+            // only while this write still owns the control. A later rating made
+            // during this request wins, and clearing its override here would
+            // show the older value for a write that did land.
+            if userStateMutationGeneration == generation {
+                ratingOverride = nil
+            }
             personalStateNotice = PersonalStateNotice(outcome)
         }
     }
