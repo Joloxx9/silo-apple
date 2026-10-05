@@ -99,11 +99,42 @@ struct SectionRow: View {
         return .poster
     }
 
+    /// Library and recommendation rows draw their episode stills (Next Up)
+    /// at Home's still width. tvOS keeps the shared Skyline thumbnail width.
+    static var thumbnailCardWidth: CGFloat? {
+        #if os(tvOS)
+        nil
+        #else
+        HomeFeedMetrics.stillWidth
+        #endif
+    }
+
     private var showProgress: Bool {
         isContinueWatching || isEpisodeRow
     }
 
     var body: some View {
+        #if os(tvOS)
+        mediaRow
+        #else
+        // Continue Watching uses Home's row on every page, so a library's
+        // resume cards keep Home's stills, size and play button.
+        if isContinueWatching {
+            HomeFeedRow(
+                section: section,
+                onRemoveFromContinueWatching: onRemoveFromContinueWatching,
+                onSetWatched: { item, played in
+                    await setWatched(item, played: played)
+                }
+            )
+            .mediaActionFeedback(watchedFeedback)
+        } else {
+            mediaRow
+        }
+        #endif
+    }
+
+    private var mediaRow: some View {
         MediaRow(
             title: section.title,
             items: section.items,
@@ -127,6 +158,7 @@ struct SectionRow: View {
             onMoveUp: onMoveUp,
             onItemFocus: onItemFocus,
             cardWidth: cardWidth,
+            thumbnailCardWidth: Self.thumbnailCardWidth,
             cardVerticalPadding: cardVerticalPadding,
             onMoveDown: onMoveDown,
             focusRestorationOwner: focusRestorationOwner

@@ -13,6 +13,12 @@ import UIKit
 ///
 /// Single ownership: the SiloControl client owns one instance and attaches it
 /// only for the lifetime of a remote-media session.
+///
+/// Both centers are process-wide and may also be bound by a local audiobook
+/// or software-route video, so this controller claims them through
+/// `SharedNowPlayingArbiter` while attached, publishes only its own metadata
+/// and only while it is the newest claimant, and releases them through the
+/// arbiter on `detach()`.
 @MainActor
 final class NowPlayingController {
     private static let logger = Logger(
@@ -57,6 +63,10 @@ final class NowPlayingController {
     private var currentArtworkURL: URL?
     private var artworkFetchTask: Task<Void, Never>?
     private var preferredSkipIntervals = SkipIntervals(backward: 10, forward: 10)
+    /// This session's metadata. Published as a whole so fields another
+    /// owner left in the shared dictionary never leak into it, and kept so
+    /// the arbiter can ask for it to be republished.
+    private var nowPlayingInfo: [String: Any] = [:]
 
     enum MediaKind {
         case video
@@ -79,8 +89,16 @@ final class NowPlayingController {
     func attach(handlers: Handlers) {
         self.handlers = handlers
         if !isActive {
-            registerRemoteCommands()
+            // Claiming suspends any local audiobook or software-route video
+            // on the shared centers, so lock-screen commands reach only the
+            // TV session whose metadata is shown.
+            SharedNowPlayingArbiter.shared.claim(
+                self,
+                suspend: { [weak self] in self?.unregisterRemoteCommands() },
+                restore: { [weak self] in self?.restoreSharedBinding() }
+            )
             isActive = true
+            registerRemoteCommands()
         } else {
             updateCommandAvailability()
         }
@@ -96,8 +114,23 @@ final class NowPlayingController {
         currentArtworkURL = nil
 
         unregisterRemoteCommands()
+        nowPlayingInfo = [:]
+        SharedNowPlayingArbiter.shared.releaseSharedCenters(self)
+    }
 
-        MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
+    /// Re-registers targets and republishes metadata once this session is
+    /// again the newest claimant. No-op unless attached.
+    private func restoreSharedBinding() {
+        guard isActive else { return }
+        unregisterRemoteCommands()
+        registerRemoteCommands()
+        publishNowPlayingInfo()
+    }
+
+    /// False while detached or suspended behind a newer claimant, whose
+    /// metadata and command state this session must not overwrite.
+    private var drivesSharedCenters: Bool {
+        isActive && SharedNowPlayingArbiter.shared.isCurrentClaimant(self)
     }
 
     func setPreferredSkipIntervals(backward: TimeInterval, forward: TimeInterval) {
@@ -105,7 +138,7 @@ final class NowPlayingController {
             backward: max(1, backward),
             forward: max(1, forward)
         )
-        guard isActive else { return }
+        guard drivesSharedCenters else { return }
         let center = MPRemoteCommandCenter.shared()
         center.skipForwardCommand.preferredIntervals = [NSNumber(value: preferredSkipIntervals.forward)]
         center.skipBackwardCommand.preferredIntervals = [NSNumber(value: preferredSkipIntervals.backward)]
@@ -128,22 +161,28 @@ final class NowPlayingController {
         playbackRate: Double = 1.0
     ) {
         guard isActive else { return }
-        var info = MPNowPlayingInfoCenter.default().nowPlayingInfo ?? [:]
-        info[MPMediaItemPropertyTitle] = title
+        nowPlayingInfo[MPMediaItemPropertyTitle] = title
+        // Clear omitted fields so a previous remote item's values do not linger.
         if let artist, !artist.isEmpty {
-            info[MPMediaItemPropertyArtist] = artist
+            nowPlayingInfo[MPMediaItemPropertyArtist] = artist
+        } else {
+            nowPlayingInfo[MPMediaItemPropertyArtist] = nil
         }
         if let albumTitle, !albumTitle.isEmpty {
-            info[MPMediaItemPropertyAlbumTitle] = albumTitle
+            nowPlayingInfo[MPMediaItemPropertyAlbumTitle] = albumTitle
+        } else {
+            nowPlayingInfo[MPMediaItemPropertyAlbumTitle] = nil
         }
         if duration > 0 {
-            info[MPMediaItemPropertyPlaybackDuration] = duration
+            nowPlayingInfo[MPMediaItemPropertyPlaybackDuration] = duration
+        } else {
+            nowPlayingInfo[MPMediaItemPropertyPlaybackDuration] = nil
         }
-        info[MPNowPlayingInfoPropertyElapsedPlaybackTime] = position
-        info[MPNowPlayingInfoPropertyPlaybackRate] = isPlaying ? playbackRate : 0.0
-        info[MPNowPlayingInfoPropertyDefaultPlaybackRate] = playbackRate
-        info[MPNowPlayingInfoPropertyMediaType] = mediaKind.nowPlayingValue
-        MPNowPlayingInfoCenter.default().nowPlayingInfo = info
+        nowPlayingInfo[MPNowPlayingInfoPropertyElapsedPlaybackTime] = position
+        nowPlayingInfo[MPNowPlayingInfoPropertyPlaybackRate] = isPlaying ? playbackRate : 0.0
+        nowPlayingInfo[MPNowPlayingInfoPropertyDefaultPlaybackRate] = playbackRate
+        nowPlayingInfo[MPNowPlayingInfoPropertyMediaType] = mediaKind.nowPlayingValue
+        publishNowPlayingInfo()
         updateCommandAvailability()
     }
 
@@ -192,14 +231,19 @@ final class NowPlayingController {
     }
 
     private func applyArtwork(_ image: UIImage?) {
-        var info = MPNowPlayingInfoCenter.default().nowPlayingInfo ?? [:]
         if let image {
             let artwork = MPMediaItemArtwork(boundsSize: image.size) { _ in image }
-            info[MPMediaItemPropertyArtwork] = artwork
+            nowPlayingInfo[MPMediaItemPropertyArtwork] = artwork
         } else {
-            info[MPMediaItemPropertyArtwork] = nil
+            nowPlayingInfo[MPMediaItemPropertyArtwork] = nil
         }
-        MPNowPlayingInfoCenter.default().nowPlayingInfo = info
+        publishNowPlayingInfo()
+    }
+
+    private func publishNowPlayingInfo() {
+        guard drivesSharedCenters else { return }
+        MPNowPlayingInfoCenter.default().nowPlayingInfo =
+            nowPlayingInfo.isEmpty ? nil : nowPlayingInfo
     }
 
     // MARK: - Remote commands
@@ -295,7 +339,7 @@ final class NowPlayingController {
     }
 
     private func updateCommandAvailability() {
-        guard isActive else { return }
+        guard drivesSharedCenters else { return }
         let center = MPRemoteCommandCenter.shared()
         center.stopCommand.isEnabled = handlers?.stop != nil
         center.nextTrackCommand.isEnabled = handlers.map { $0.next != nil && $0.isNextEnabled() } ?? false

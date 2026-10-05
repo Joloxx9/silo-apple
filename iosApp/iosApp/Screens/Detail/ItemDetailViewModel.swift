@@ -161,6 +161,9 @@ class ItemDetailViewModel {
     /// mutation. Without this, a slow entry load can overwrite an optimistic
     /// button tap and put the stale pair back into `ResponseCache`.
     private var userStateMutationGeneration = 0
+    /// Bumped by every watched change to this page's item, so an older
+    /// toggle's response cannot reassert or roll back over a newer one.
+    private var watchedToggleGeneration = 0
     /// Owner captured when the detail load began. Membership reads and
     /// favorite/watchlist/watched writes from this page run under it, so a
     /// tap after a profile or server switch is refused instead of landing on
@@ -200,7 +203,8 @@ class ItemDetailViewModel {
     func loadDetail(
         contentId: String,
         preserveSeasonSelection: Bool = false,
-        coalescesMetadataRequests: Bool = true
+        coalescesMetadataRequests: Bool = true,
+        fetchDetail: (@Sendable (String) async throws -> ItemDetail)? = nil
     ) async {
         guard !Task.isCancelled else { return }
         detailLoadGeneration += 1
@@ -271,7 +275,9 @@ class ItemDetailViewModel {
             personalStateOwner = await TokenStore.shared.captureOrdinaryRequestAuth()
 
             let item: ItemDetail
-            if coalescesMetadataRequests {
+            if let fetchDetail {
+                item = try await fetchDetail(contentId)
+            } else if coalescesMetadataRequests {
                 item = try await MetadataRequestPool.shared.itemDetail(contentId: contentId, libraryId: libraryId)
             } else {
                 item = try await SiloAPI.shared.itemDetail(contentId: contentId, libraryId: libraryId)
@@ -473,14 +479,25 @@ class ItemDetailViewModel {
     }
     #endif
 
-    /// Adopt a payload the caller already fetched (the trailer poll's result)
-    /// through the same publish/enrich/structure path as `loadDetail`.
-    /// Claiming a generation stops an older `loadDetail` still in enrichment
-    /// from overwriting it.
+    /// Adopt a detail payload the caller already has in hand, taking the
+    /// same path a `loadDetail` response would — enrichment, cache write,
+    /// watched flag, season/episode structure — minus the catalog fetch that
+    /// produced it and the favorite/watchlist round trips, which nothing
+    /// about a background refresh invalidates. The watched flag is skipped
+    /// when this page changed it after `watchedGeneration` was captured: the
+    /// payload may predate that change.
+    ///
+    /// Enrichment failing is not fatal here: it returns the payload
+    /// untouched, so the new trailers still render.
+    ///
+    /// Claiming a generation is what stops an entry `loadDetail` that is
+    /// still suspended in enrichment from landing its older, trailer-less
+    /// payload on top of this one afterwards.
     private func apply(
         item: ItemDetail,
         contentId: String,
-        preserveSeasonSelection: Bool
+        preserveSeasonSelection: Bool,
+        watchedGeneration: Int
     ) async {
         let generation = beginDetailWrite()
         guard let enriched = await adoptDetail(
@@ -488,7 +505,9 @@ class ItemDetailViewModel {
             contentId: contentId,
             generation: generation
         ) else { return }
-        isWatched = enriched.userData?.played ?? false
+        if userStateMutationGeneration == watchedGeneration {
+            isWatched = enriched.userData?.played ?? false
+        }
         await loadRelatedStructure(
             for: enriched,
             contentId: contentId,
@@ -712,6 +731,9 @@ class ItemDetailViewModel {
     func startTrailerFetch(remoteVideosDisplayable: Bool = true) {
         guard let contentId = detail?.contentId, supportsTrailerFetch else { return }
         trailerFetchContentId = contentId
+        // Captured once per run: a resumed poll reuses this closure, and the
+        // payload it finds may have been read before a later watched change.
+        let watchedGeneration = userStateMutationGeneration
         trailerFetch.start(
             baseline: detail,
             remoteVideosDisplayable: remoteVideosDisplayable
@@ -736,7 +758,8 @@ class ItemDetailViewModel {
             await self.apply(
                 item: found,
                 contentId: contentId,
-                preserveSeasonSelection: true
+                preserveSeasonSelection: true,
+                watchedGeneration: watchedGeneration
             )
         }
     }
@@ -1499,13 +1522,31 @@ class ItemDetailViewModel {
     /// Mark the detail item (and, for series/seasons, its leaf episodes)
     /// as watched or unwatched through POST / DELETE
     /// `/api/v2/watched/{id}`; the server resolves the targets.
-    func toggleWatched() async {
+    ///
+    /// A detail load that may have read `played` before this change cannot
+    /// revert it. A load that began before the server confirmed skips its
+    /// watched write if it lands afterwards, and the confirmed value is
+    /// re-asserted over a load that landed while the write was in flight.
+    func toggleWatched(
+        send: ((_ contentId: String, _ watched: Bool) async -> PersonalStateOutcome)? = nil
+    ) async {
         guard let contentId = detail?.contentId else { return }
         userStateMutationGeneration += 1
+        watchedToggleGeneration += 1
+        let toggleGeneration = watchedToggleGeneration
         let requested = !isWatched
         isWatched = requested
-        let outcome = await dispatchPersonalState(.watched, contentId: contentId, to: requested)
+        let outcome: PersonalStateOutcome
+        if let send {
+            outcome = await send(contentId, requested)
+        } else {
+            outcome = await dispatchPersonalState(.watched, contentId: contentId, to: requested)
+        }
         if outcome == .applied {
+            if detail?.contentId == contentId, toggleGeneration == watchedToggleGeneration {
+                userStateMutationGeneration += 1
+                isWatched = requested
+            }
             let isSeries = detail?.type == "series" && detail?.contentId == contentId
             #if os(tvOS)
             if isSeries {
@@ -1519,7 +1560,9 @@ class ItemDetailViewModel {
                 await refreshWatchedSeries(seriesId: contentId)
             }
         } else {
-            if isWatched == requested { isWatched = !requested }
+            if toggleGeneration == watchedToggleGeneration, isWatched == requested {
+                isWatched = !requested
+            }
             personalStateNotice = PersonalStateNotice(outcome)
         }
     }
@@ -1565,6 +1608,7 @@ class ItemDetailViewModel {
         guard outcome == .applied else { return outcome }
         if contentId == detail?.contentId {
             userStateMutationGeneration += 1
+            watchedToggleGeneration += 1
             isWatched = played
         }
         invalidateRelatedCaches(contentId: contentId, seriesId: seriesId)
@@ -1680,26 +1724,12 @@ class ItemDetailViewModel {
 
     /// Tell adjacent caches that a mutation invalidated derived state
     /// (e.g. parent series progress when a child episode is marked
-    /// watched). Drops the cached payloads so the next visit fetches
-    /// fresh — painted content keeps showing in the meantime via the
-    /// existing `detail` binding.
+    /// watched), through the same `PersonalStateSync.invalidateItemState`
+    /// the card watched toggle uses. The next visit fetches fresh; painted content
+    /// keeps showing in the meantime via the existing `detail` binding. An
+    /// episode page's series is the fallback parent.
     private func invalidateRelatedCaches(contentId: String, seriesId: String? = nil) {
-        ResponseCache.shared.removeItemMetadata(contentId: contentId)
-        if let seriesId = seriesId ?? detail?.seriesId {
-            ResponseCache.shared.removeItemMetadata(contentId: seriesId)
-        }
-        // Home + recommendations watch-progress rows are now stale too. A
-        // Home read already in flight began before this change; drop it.
-        StartupContentPrefetcher.invalidateHomeSectionsInFlight()
-        ResponseCache.shared.remove(CacheKey.homeSections)
-        ResponseCache.shared.remove(CacheKey.recommendations)
-        ResponseCache.shared.remove(CacheKey.favorites)
-        ResponseCache.shared.remove(CacheKey.watchlist)
-        ResponseCache.shared.remove(CacheKey.history)
-
-        #if os(tvOS)
-        ItemDetailCache.shared.markStaleFamily(contentId: contentId)
-        #endif
+        PersonalStateSync.invalidateItemState(contentId: contentId, seriesId: seriesId ?? detail?.seriesId)
     }
 }
 

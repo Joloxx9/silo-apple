@@ -36,6 +36,11 @@ class ServerSetupViewModel {
     /// The found server being connected to, so its row can show progress.
     private(set) var connectingServerID: DiscoveredServer.ID?
 
+    /// Host port that the stock silo-server compose file publishes for the native
+    /// API (`${PORT:-8090}:8080`). Setup suggests it and probes it as the Auto
+    /// fallback. 8096 is the Jellyfin-compat listener, not the Silo API.
+    static let nativeServerPort = "8090"
+
     /// Probes one candidate URL and commits it on success.
     typealias ServerCheck = @Sendable (String) async throws -> APIv2SetupStatus
     /// Resolves a bare overlay machine name (`silo`) to its HTTPS origin.
@@ -85,6 +90,7 @@ class ServerSetupViewModel {
     private(set) var insecurePrompt: InsecurePrompt?
 
     /// Validate the server URL and determine whether setup or login is needed.
+    @MainActor
     func connect(router: AppRouter) async {
         guard !host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             error = FormError("Please enter a server host.")
@@ -286,7 +292,7 @@ class ServerSetupViewModel {
         }
 
         if selectedScheme == .auto, explicitPort == nil {
-            candidates.append(try makeURL(scheme: "http", host: parsed.host, port: "8090", path: parsed.path))
+            candidates.append(try makeURL(scheme: "http", host: parsed.host, port: Self.nativeServerPort, path: parsed.path))
         }
 
         return unique(candidates)

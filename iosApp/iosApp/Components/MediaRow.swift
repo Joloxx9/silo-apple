@@ -74,6 +74,9 @@ struct MediaRow: View {
     /// Optional width for poster/square cards — Skyline's dense landing
     /// rows (§5.6) pass a compact width. Episode thumbs are unaffected.
     var cardWidth: CGFloat? = nil
+    /// Optional unscaled width for episode thumbs; nil keeps
+    /// `SiloTheme.thumbnailCardWidth`.
+    var thumbnailCardWidth: CGFloat? = nil
     /// Optional tvOS-only vertical padding override for the card strip.
     /// Standard rows keep the default breathing room for focus lift.
     var cardVerticalPadding: CGFloat? = nil
@@ -363,12 +366,17 @@ struct MediaRow: View {
                 }
             }
             #if !os(tvOS)
-            .padding(.horizontal, SiloTheme.safePadding)
+            .scrollTargetLayout()
             #endif
             .padding(.vertical, verticalCardPadding)
             .phoneMediaRailBounds()
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+        #if !os(tvOS)
+        // A content margin, not padding, so settled cards keep the gutter.
+        .contentMargins(.horizontal, SiloTheme.safePadding, for: .scrollContent)
+        .mediaRailScrolling()
+        #endif
         #if os(tvOS)
         // Keep the gutter outside the scroll view. With content margins,
         // tvOS adds the gutter to the resting offset again when focus leaves
@@ -402,12 +410,17 @@ struct MediaRow: View {
     /// from the focused card, elsewhere from each card that appears.
     private func warmCards(after index: Int) {
         ArtworkLookahead.warmCards(after: index, in: items) { item in
-            Self.cardArtwork(for: item, layout: layout, cardWidth: cardWidth)
+            Self.cardArtwork(for: item, layout: layout, cardWidth: cardWidth, thumbnailCardWidth: thumbnailCardWidth)
         }
     }
 
     /// The artwork a card in a row of `layout` draws, and its size.
-    static func cardArtwork(for item: SectionItem, layout: MediaRowLayout, cardWidth: CGFloat?) -> CardArtwork? {
+    static func cardArtwork(
+        for item: SectionItem,
+        layout: MediaRowLayout,
+        cardWidth: CGFloat?,
+        thumbnailCardWidth: CGFloat? = nil
+    ) -> CardArtwork? {
         switch layout {
         case .poster, .square:
             guard let url = item.posterUrl else { return nil }
@@ -416,7 +429,7 @@ struct MediaRow: View {
                 pointSize: MediaCard.artworkSize(cardWidthOverride: cardWidth, aspect: layout == .square ? .square : .poster)
             )
         case .thumbnail:
-            return CardArtwork(url: EpisodeThumbCard.imageURL(for: item), pointSize: EpisodeThumbCard.artworkSize)
+            return CardArtwork(url: EpisodeThumbCard.imageURL(for: item), pointSize: EpisodeThumbCard.artworkSize(baseWidth: thumbnailCardWidth))
         }
     }
 
@@ -458,7 +471,8 @@ struct MediaRow: View {
                 contextDetailTitle: contextDetailTitle(for: item),
                 onOpenContextDetail: contextDetailAction(for: item),
                 onRemoveFromContinueWatching: continueWatchingRemovalAction(for: item),
-                onSetWatched: watchedToggleAction(for: item)
+                onSetWatched: watchedToggleAction(for: item),
+                baseCardWidth: thumbnailCardWidth
             )
         }
     }

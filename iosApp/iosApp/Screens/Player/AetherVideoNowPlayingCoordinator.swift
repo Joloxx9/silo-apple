@@ -7,21 +7,28 @@ import UIKit
 #endif
 
 /// Arbitrates the process-wide `MPRemoteCommandCenter.shared()` and
-/// `MPNowPlayingInfoCenter.default()` between the coordinators that can bind
-/// them at the same time (video's fallback route and the audiobook route).
+/// `MPNowPlayingInfoCenter.default()` between every Silo owner that can bind
+/// them at the same time: video's software-renderer fallback route, the
+/// audiobook software route (and every audiobook route on macOS), and
+/// SiloControl remote-media sessions.
 ///
-/// Both centers are process-wide, so a coordinator tearing its binding down
-/// would otherwise disable every shared transport command and clear shared
-/// metadata even while another coordinator's targets are still registered.
-/// Claims are keyed by coordinator identity: teardown side effects only run
-/// for the last claimant, and a surviving claimant is asked to restore its own
-/// targets and metadata in case the departing one overwrote them.
+/// Both centers are process-wide, so an owner tearing its binding down would
+/// otherwise disable every shared transport command and clear shared metadata
+/// even while another owner's targets are still registered. Claims are keyed
+/// by owner identity and stacked; only the newest claimant drives the centers.
+/// `MPRemoteCommandCenter` invokes every registered target, so a second live
+/// target set would send one lock-screen press to stale local playback as
+/// well as to the owner whose metadata is shown. Claiming suspends the
+/// previous holder, and every owner leaves through `releaseSharedCenters`,
+/// which disables the transport, drops the claim, and then either restores
+/// the next claimant or clears the shared metadata.
 @MainActor
 final class SharedNowPlayingArbiter {
     static let shared = SharedNowPlayingArbiter()
 
     private struct Claim {
         weak var owner: AnyObject?
+        let suspend: () -> Void
         let restore: () -> Void
     }
 
@@ -29,27 +36,69 @@ final class SharedNowPlayingArbiter {
 
     private init() {}
 
-    /// Records `owner` as a holder of the shared centers. `restore` must
-    /// re-register that owner's remote-command targets and republish its
-    /// metadata, and must be a no-op if the owner is no longer bound to the
-    /// shared centers.
-    func claim(_ owner: AnyObject, restore: @escaping () -> Void) {
-        prune()
-        claims.removeAll { $0.owner === owner }
-        claims.append(Claim(owner: owner, restore: restore))
+    /// Every transport command any Silo owner can enable. Enabling is part of
+    /// a binding, so a command left enabled after its targets are gone keeps
+    /// advertising a transport nobody drives.
+    static func disableTransportCommands(on center: MPRemoteCommandCenter) {
+        for command in [
+            center.playCommand,
+            center.pauseCommand,
+            center.togglePlayPauseCommand,
+            center.skipForwardCommand,
+            center.skipBackwardCommand,
+            center.changePlaybackPositionCommand,
+            center.stopCommand,
+            center.nextTrackCommand,
+        ] {
+            command.isEnabled = false
+        }
     }
 
-    /// Drops `owner`'s claim. Returns `true` when no other coordinator holds
-    /// the shared centers, meaning the caller may disable shared commands and
-    /// clear shared metadata. Otherwise the surviving claimant is restored and
-    /// `false` is returned.
-    @discardableResult
-    func release(_ owner: AnyObject) -> Bool {
+    /// Makes `owner` the current holder of the shared centers, suspending the
+    /// previous holder first. The caller registers its own targets after
+    /// claiming. `suspend` must remove the owner's remote-command targets.
+    /// `restore` must re-register them, re-enable every command the owner
+    /// drives, and republish its metadata; it must be a no-op if the owner is
+    /// no longer bound to the shared centers. Neither may call the arbiter.
+    func claim(
+        _ owner: AnyObject,
+        suspend: @escaping () -> Void,
+        restore: @escaping () -> Void
+    ) {
+        prune()
+        if let previous = claims.last, previous.owner !== owner {
+            previous.suspend()
+            // The new owner enables only what it drives, so commands only
+            // the suspended owner drove (stop, next) must not stay live.
+            Self.disableTransportCommands(on: MPRemoteCommandCenter.shared())
+        }
+        claims.removeAll { $0.owner === owner }
+        claims.append(Claim(owner: owner, suspend: suspend, restore: restore))
+    }
+
+    /// Whether `owner` is the newest claimant and so may register targets,
+    /// change command state, and publish metadata on the shared centers. A
+    /// suspended owner keeps its state locally until it is restored.
+    func isCurrentClaimant(_ owner: AnyObject) -> Bool {
+        claims.last?.owner === owner
+    }
+
+    /// Ends `owner`'s binding to the process-wide centers. The caller must
+    /// have removed its own targets first. Disables every transport command,
+    /// drops the claim, then restores only the newest remaining claimant, so
+    /// one owner's targets and metadata hold the centers. When `owner` was
+    /// the last claimant, clears
+    /// `MPNowPlayingInfoCenter.default().nowPlayingInfo` instead. A restore
+    /// must re-enable every command its owner drives.
+    func releaseSharedCenters(_ owner: AnyObject) {
+        Self.disableTransportCommands(on: MPRemoteCommandCenter.shared())
         prune()
         claims.removeAll { $0.owner === owner }
-        guard let survivor = claims.last else { return true }
-        survivor.restore()
-        return false
+        guard let next = claims.last else {
+            MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
+            return
+        }
+        next.restore()
     }
 
     private func prune() {
@@ -212,7 +261,7 @@ final class AetherVideoNowPlayingCoordinator {
             backward: max(1, backward),
             forward: max(1, forward)
         )
-        guard let center = commandCenter else { return }
+        guard drivesBoundCenters, let center = commandCenter else { return }
         center.skipForwardCommand.preferredIntervals = [
             NSNumber(value: preferredSkipIntervals.forward),
         ]
@@ -398,28 +447,8 @@ final class AetherVideoNowPlayingCoordinator {
         remoteCommandTargets.removeAll()
     }
 
-    /// `MPRemoteCommandCenter.shared()` is process-wide, so a command left
-    /// enabled after its targets are gone keeps advertising a transport this
-    /// coordinator no longer drives. Enabling is part of the binding and has
-    /// to be undone with it. Covers every command `registerRemoteCommands`
-    /// and `updateCommandAvailability` can turn on.
-    private func disableBoundCommands(on center: MPRemoteCommandCenter) {
-        for command in [
-            center.playCommand,
-            center.pauseCommand,
-            center.togglePlayPauseCommand,
-            center.skipForwardCommand,
-            center.skipBackwardCommand,
-            center.changePlaybackPositionCommand,
-            center.stopCommand,
-            center.nextTrackCommand,
-        ] {
-            command.isEnabled = false
-        }
-    }
-
     private func updateCommandAvailability() {
-        guard let center = commandCenter else { return }
+        guard drivesBoundCenters, let center = commandCenter else { return }
         center.stopCommand.isEnabled = handlers?.stop != nil
         center.nextTrackCommand.isEnabled = handlers.map {
             $0.next != nil && $0.isNextEnabled()
@@ -427,8 +456,17 @@ final class AetherVideoNowPlayingCoordinator {
     }
 
     private func publishNowPlayingInfo() {
-        guard let infoCenter else { return }
+        guard drivesBoundCenters, let infoCenter else { return }
         infoCenter.nowPlayingInfo = nowPlayingInfo.isEmpty ? nil : nowPlayingInfo
+    }
+
+    /// False while suspended on the shared centers behind a newer claimant,
+    /// whose metadata and command state this coordinator must not overwrite.
+    /// A player-scoped center belongs to this binding alone.
+    private var drivesBoundCenters: Bool {
+        guard let commandCenter else { return false }
+        return commandCenter !== MPRemoteCommandCenter.shared()
+            || SharedNowPlayingArbiter.shared.isCurrentClaimant(self)
     }
 
     /// Binds the process-wide centers and registers this coordinator as a
@@ -436,13 +474,15 @@ final class AetherVideoNowPlayingCoordinator {
     private func bindSharedCenters() {
         commandCenter = MPRemoteCommandCenter.shared()
         infoCenter = MPNowPlayingInfoCenter.default()
-        SharedNowPlayingArbiter.shared.claim(self) { [weak self] in
-            self?.restoreSharedBinding()
-        }
+        SharedNowPlayingArbiter.shared.claim(
+            self,
+            suspend: { [weak self] in self?.unregisterRemoteCommands() },
+            restore: { [weak self] in self?.restoreSharedBinding() }
+        )
     }
 
-    /// Re-registers targets and republishes metadata after another claimant
-    /// released the shared centers. No-op unless still bound to them.
+    /// Re-registers targets and republishes metadata once this coordinator is
+    /// again the newest claimant. No-op unless still bound to the shared centers.
     private func restoreSharedBinding() {
         guard commandCenter === MPRemoteCommandCenter.shared() else { return }
         unregisterRemoteCommands()
@@ -450,17 +490,16 @@ final class AetherVideoNowPlayingCoordinator {
         publishNowPlayingInfo()
     }
 
+    /// Drops the current binding. On the shared centers the arbiter owns the
+    /// teardown order, so surviving claimants keep their commands and
+    /// metadata. A player-scoped center belongs to this binding alone.
     private func unbindCurrentDestination() {
         unregisterRemoteCommands()
-        // Disabling commands and clearing metadata is process-wide when bound
-        // to the shared centers, so it may only happen once the last claimant
-        // leaves; otherwise the surviving claimant is restored instead.
-        let isExclusive = commandCenter === MPRemoteCommandCenter.shared()
-            ? SharedNowPlayingArbiter.shared.release(self)
-            : true
-        if isExclusive {
+        if commandCenter === MPRemoteCommandCenter.shared() {
+            SharedNowPlayingArbiter.shared.releaseSharedCenters(self)
+        } else {
             if let commandCenter {
-                disableBoundCommands(on: commandCenter)
+                SharedNowPlayingArbiter.disableTransportCommands(on: commandCenter)
             }
             infoCenter?.nowPlayingInfo = nil
         }

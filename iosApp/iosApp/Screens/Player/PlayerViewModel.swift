@@ -991,7 +991,7 @@ class PlayerViewModel {
     private var lastSeriesPlayback: (seriesId: String, seasonNumber: Int?)?
     /// `SeriesPlaybackReturnInbox` generation when this player was created.
     private let seriesReturnGeneration: Int
-    #if os(iOS)
+    #if os(iOS) || os(macOS)
     @ObservationIgnored
     private var refreshHomeAfterPlaybackWrite: (@MainActor () -> Void)?
     #endif
@@ -3524,10 +3524,9 @@ class PlayerViewModel {
         var next = settings.subtitleAppearance
         guard next.position != position else { return }
         next.position = position
-        settings.subtitleAppearance = next.sanitized()
-        settings.subtitleUsesDeviceAppearanceOverride = true
+        settings.stageSubtitleAppearance(next)
         Task { [settings] in
-            await settings.setSubtitleAppearance(next)
+            await settings.flushPendingDeviceSettings()
         }
     }
 
@@ -3785,7 +3784,7 @@ class PlayerViewModel {
                currentTime >= 0 {
                 let priorNaturalEndProgressTask = naturalEndProgressTask
                 let endPosition = currentTime
-                #if os(iOS)
+                #if os(iOS) || os(macOS)
                 let refreshHome = refreshHomeAfterPlaybackWrite
                 #endif
                 naturalEndProgressTask = Task { [sessionBridge] in
@@ -3794,7 +3793,7 @@ class PlayerViewModel {
                         position: endPosition,
                         isPaused: true
                     )
-                    #if os(iOS)
+                    #if os(iOS) || os(macOS)
                     if result == .success { refreshHome?() }
                     #endif
                 }
@@ -4149,7 +4148,7 @@ class PlayerViewModel {
         origin: LoadOrigin = .userInitiated
     ) {
         guard !isDisposed else { return }
-        #if os(iOS)
+        #if os(iOS) || os(macOS)
         if refreshHomeAfterPlaybackWrite == nil {
             refreshHomeAfterPlaybackWrite = StartupContentPrefetcher.homeRefreshAfterPlaybackWrite()
         }
@@ -4239,7 +4238,7 @@ class PlayerViewModel {
                 } else {
                     await self.sessionBridge.reportProgress(position: snapshotPosition, isPaused: true)
                 }
-                #if os(iOS)
+                #if os(iOS) || os(macOS)
                 self.refreshHomeAfterPlaybackWrite?()
                 #endif
             }
@@ -6707,7 +6706,7 @@ class PlayerViewModel {
             if stopServerSessionOnTeardown {
                 await sessionBridge.stopSession(position: finalPosition, isPaused: true)
             }
-            #if os(iOS)
+            #if os(iOS) || os(macOS)
             refreshHomeAfterPlaybackWrite?()
             #endif
         }
@@ -8148,7 +8147,18 @@ extension PlayerViewModel {
     }
 
     private func makeSiloControlTrack(_ track: PlayerTrack) -> SiloControlTrack {
-        SiloControlTrack(
+        // Subtitle titles are often the release name, which made every row on
+        // the phone remote identical. Lead with the language, and keep what
+        // separates same-language tracks in the title: remotes show only that.
+        if track.kind == .sub {
+            return SiloControlTrack(
+                kind: track.kind.rawValue,
+                trackId: track.trackId,
+                title: track.languageFirstSingleLineLabel,
+                detail: track.languageFirstAttributesLabel
+            )
+        }
+        return SiloControlTrack(
             kind: track.kind.rawValue,
             trackId: track.trackId,
             title: track.primaryLabel,

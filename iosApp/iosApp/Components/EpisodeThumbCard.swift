@@ -28,12 +28,12 @@ struct EpisodeThumbCard: View {
     var onOpenContextDetail: (() -> Void)? = nil
     var onRemoveFromContinueWatching: (() -> Void)? = nil
     var onSetWatched: ((Bool) async -> Bool)? = nil
+    /// Unscaled card width; nil keeps `SiloTheme.thumbnailCardWidth`. The
+    /// Poster Size setting scales either one.
+    var baseCardWidth: CGFloat? = nil
 
     @Environment(\.browseLibraryId) private var browseLibraryId
-    @State private var actionFeedback = MediaActionFeedback()
-    @State private var favoriteOverride: Bool?
-    @State private var watchlistOverride: Bool?
-    @State private var playedOverride: Bool?
+    @State private var personalState = MediaCardPersonalState()
     @State private var uiCustomization = UICustomizationPreferences.shared
     @EnvironmentObject private var overlayStore: OverlayPrefsStore
     #if os(tvOS)
@@ -45,12 +45,13 @@ struct EpisodeThumbCard: View {
     @Environment(\.itemDetailBrowseSource) private var detailBrowseSource
     #endif
 
-    private var cardWidth: CGFloat { Self.artworkSize.width }
-    private var cardHeight: CGFloat { Self.artworkSize.height }
+    private var cardWidth: CGFloat { Self.artworkSize(baseWidth: baseCardWidth).width }
+    private var cardHeight: CGFloat { Self.artworkSize(baseWidth: baseCardWidth).height }
 
     /// The size the card draws its still at, at the current card-size setting.
-    static var artworkSize: CGSize {
-        let width = SiloTheme.thumbnailCardWidth * UICustomizationPreferences.shared.cardPresentation.posterSize.scale
+    static func artworkSize(baseWidth: CGFloat? = nil) -> CGSize {
+        let base = baseWidth ?? SiloTheme.thumbnailCardWidth
+        let width = base * UICustomizationPreferences.shared.cardPresentation.posterSize.scale
         return CGSize(width: width, height: width * (SiloTheme.thumbnailCardHeight / SiloTheme.thumbnailCardWidth))
     }
 
@@ -64,7 +65,7 @@ struct EpisodeThumbCard: View {
     #endif
 
     var body: some View {
-        cardBody.mediaActionFeedback(actionFeedback)
+        cardBody.mediaActionFeedback(personalState.feedback)
     }
 
     private var cardBody: some View {
@@ -104,9 +105,7 @@ struct EpisodeThumbCard: View {
         .frame(width: cardWidth)
         .focusSection()
         .onChange(of: item.userState) { _, _ in
-            playedOverride = nil
-            favoriteOverride = nil
-            watchlistOverride = nil
+            personalState.reset()
         }
         .task(id: continueWatchingMetadataTaskId) {
             guard onRemoveFromContinueWatching != nil else { return }
@@ -123,9 +122,7 @@ struct EpisodeThumbCard: View {
             }
         }
         .onChange(of: item.userState) { _, _ in
-            playedOverride = nil
-            favoriteOverride = nil
-            watchlistOverride = nil
+            personalState.reset()
         }
         .frame(width: cardWidth)
         #endif
@@ -239,9 +236,7 @@ struct EpisodeThumbCard: View {
         .frame(width: cardWidth, height: cardHeight)
     }
 
-    private var isPlayed: Bool {
-        playedOverride ?? (item.userState?.played == true)
-    }
+    private var isPlayed: Bool { personalState.isPlayed(item.userState) }
 
     private var resolvedOverlayData: OverlayData {
         #if os(tvOS)
@@ -406,7 +401,7 @@ struct EpisodeThumbCard: View {
             isWatched: isPlayed,
             isFavorite: isFavorite,
             inWatchlist: inWatchlist,
-            isUpdating: actionFeedback.isUpdating,
+            isUpdating: personalState.feedback.isUpdating,
             onToggleWatched: canSetWatched ? toggleWatched : nil,
             onToggleFavorite: hasPersonalActions ? toggleFavorite : nil,
             onToggleWatchlist: hasPersonalActions ? toggleWatchlist : nil
@@ -421,57 +416,25 @@ struct EpisodeThumbCard: View {
         }
     }
     private var hasPersonalActions: Bool { item.userState != nil }
-    private var isFavorite: Bool { favoriteOverride ?? (item.userState?.isFavorite == true) }
-    private var inWatchlist: Bool { watchlistOverride ?? (item.userState?.inWatchlist == true) }
+    private var isFavorite: Bool { personalState.isFavorite(item.userState) }
+    private var inWatchlist: Bool { personalState.inWatchlist(item.userState) }
 
     private var canSetWatched: Bool {
         onSetWatched != nil || (hasPersonalActions && !item.isAudiobook)
     }
 
     private func toggleWatched() {
-        let played = !isPlayed
-        let previous = playedOverride
-        actionFeedback.perform(reportsFailure: onSetWatched == nil) {
-            playedOverride = played
-            let outcome: PersonalStateOutcome
-            if let onSetWatched {
-                outcome = await onSetWatched(played) ? .applied : .failed(nil)
-            } else {
-                outcome = await MediaCardWatchedSync.setWatched(
-                    contentId: item.contentId, played: played, seriesId: item.seriesId
-                )
-            }
-            if outcome != .applied { playedOverride = previous }
-            return outcome
-        }
+        let write: MediaCardPersonalState.WatchedWrite = onSetWatched.map { .host($0) }
+            ?? .catalog(contentId: item.contentId, seriesId: item.seriesId)
+        personalState.toggleWatched(from: item.userState, via: write)
     }
 
     private func toggleFavorite() {
-        let newValue = !isFavorite
-        let watchlist = inWatchlist
-        let previous = favoriteOverride
-        actionFeedback.perform {
-            favoriteOverride = newValue
-            let outcome = await PersonalListSync.setFavorite(
-                contentId: item.contentId, isFavorite: newValue, inWatchlist: watchlist
-            )
-            if outcome != .applied { favoriteOverride = previous }
-            return outcome
-        }
+        personalState.toggleFavorite(contentId: item.contentId, from: item.userState)
     }
 
     private func toggleWatchlist() {
-        let newValue = !inWatchlist
-        let favorite = isFavorite
-        let previous = watchlistOverride
-        actionFeedback.perform {
-            watchlistOverride = newValue
-            let outcome = await PersonalListSync.setWatchlist(
-                contentId: item.contentId, isFavorite: favorite, inWatchlist: newValue
-            )
-            if outcome != .applied { watchlistOverride = previous }
-            return outcome
-        }
+        personalState.toggleWatchlist(contentId: item.contentId, from: item.userState)
     }
 }
 

@@ -55,20 +55,11 @@ enum HomeFeed {
 // MARK: - Metadata formatting
 
 enum HomeFeedMeta {
-    static func runtime(minutes: Int?) -> String? {
-        guard let minutes, minutes > 0 else { return nil }
-        let hours = minutes / 60
-        let remainder = minutes % 60
-        if hours > 0, remainder > 0 { return "\(hours)h \(remainder)m" }
-        if hours > 0 { return "\(hours)h" }
-        return "\(remainder)m"
-    }
-
     static func remaining(position: Double?, duration: Double?) -> String? {
         guard let position, let duration, duration > 0, position > 0 else { return nil }
         let minutesLeft = Int((duration - position) / 60)
         guard minutesLeft > 0 else { return nil }
-        return runtime(minutes: minutesLeft).map { "\($0) left" }
+        return MediaTextFormatting.runtime(minutes: minutesLeft).map { "\($0) left" }
     }
 
     static func progress(for item: SectionItem) -> Double? {
@@ -180,14 +171,11 @@ private struct HomeCardMenu: ViewModifier {
     /// Owned by the card, not the menu, so the artwork's watched check flips
     /// with the menu label instead of waiting on the Home refresh —
     /// `MediaCard` drives its badge from the same effective state.
-    @Binding var playedOverride: Bool?
-    @State private var actionFeedback = MediaActionFeedback()
-    @State private var favoriteOverride: Bool?
-    @State private var watchlistOverride: Bool?
+    let personalState: MediaCardPersonalState
 
-    private var isPlayed: Bool { playedOverride ?? (item.userState?.played == true) }
-    private var isFavorite: Bool { favoriteOverride ?? (item.userState?.isFavorite == true) }
-    private var inWatchlist: Bool { watchlistOverride ?? (item.userState?.inWatchlist == true) }
+    private var isPlayed: Bool { personalState.isPlayed(item.userState) }
+    private var isFavorite: Bool { personalState.isFavorite(item.userState) }
+    private var inWatchlist: Bool { personalState.inWatchlist(item.userState) }
 
     /// Only cards backed by server user state get the personal-list entries,
     /// matching `MediaCard`.
@@ -201,11 +189,9 @@ private struct HomeCardMenu: ViewModifier {
         if hasAnyAction {
             content
                 .contextMenu { menuItems }
-                .mediaActionFeedback(actionFeedback)
+                .mediaActionFeedback(personalState.feedback)
                 .onChange(of: item.userState) { _, _ in
-                    playedOverride = nil
-                    favoriteOverride = nil
-                    watchlistOverride = nil
+                    personalState.reset()
                 }
         } else {
             content
@@ -218,7 +204,7 @@ private struct HomeCardMenu: ViewModifier {
             isWatched: isPlayed,
             isFavorite: isFavorite,
             inWatchlist: inWatchlist,
-            isUpdating: actionFeedback.isUpdating,
+            isUpdating: personalState.feedback.isUpdating,
             onToggleWatched: canSetWatched ? toggleWatched : nil,
             onToggleFavorite: hasPersonalActions ? toggleFavorite : nil,
             onToggleWatchlist: hasPersonalActions ? toggleWatchlist : nil
@@ -236,49 +222,17 @@ private struct HomeCardMenu: ViewModifier {
     }
 
     private func toggleWatched() {
-        let played = !isPlayed
-        let previous = playedOverride
-        actionFeedback.perform(reportsFailure: onSetWatched == nil) {
-            playedOverride = played
-            let outcome: PersonalStateOutcome
-            if let onSetWatched {
-                outcome = await onSetWatched(played) ? .applied : .failed(nil)
-            } else {
-                outcome = await MediaCardWatchedSync.setWatched(
-                    contentId: item.contentId, played: played, seriesId: item.seriesId
-                )
-            }
-            if outcome != .applied { playedOverride = previous }
-            return outcome
-        }
+        let write: MediaCardPersonalState.WatchedWrite = onSetWatched.map { .host($0) }
+            ?? .catalog(contentId: item.contentId, seriesId: item.seriesId)
+        personalState.toggleWatched(from: item.userState, via: write)
     }
 
     private func toggleFavorite() {
-        let newValue = !isFavorite
-        let watchlist = inWatchlist
-        let previous = favoriteOverride
-        actionFeedback.perform {
-            favoriteOverride = newValue
-            let outcome = await PersonalListSync.setFavorite(
-                contentId: item.contentId, isFavorite: newValue, inWatchlist: watchlist
-            )
-            if outcome != .applied { favoriteOverride = previous }
-            return outcome
-        }
+        personalState.toggleFavorite(contentId: item.contentId, from: item.userState)
     }
 
     private func toggleWatchlist() {
-        let newValue = !inWatchlist
-        let favorite = isFavorite
-        let previous = watchlistOverride
-        actionFeedback.perform {
-            watchlistOverride = newValue
-            let outcome = await PersonalListSync.setWatchlist(
-                contentId: item.contentId, isFavorite: favorite, inWatchlist: newValue
-            )
-            if outcome != .applied { watchlistOverride = previous }
-            return outcome
-        }
+        personalState.toggleWatchlist(contentId: item.contentId, from: item.userState)
     }
 }
 
@@ -323,11 +277,11 @@ struct HomePosterCard: View {
     var secondLineOverride: String? = nil
 
     @EnvironmentObject private var overlayStore: OverlayPrefsStore
-    /// Optimistic watched state, shared with the menu so the badge flips the
+    /// Optimistic personal state, shared with the menu so the badge flips the
     /// moment "Mark as Watched" is tapped rather than after the Home refresh.
-    @State private var playedOverride: Bool?
+    @State private var personalState = MediaCardPersonalState()
 
-    private var isPlayed: Bool { playedOverride ?? (item.userState?.played == true) }
+    private var isPlayed: Bool { personalState.isPlayed(item.userState) }
 
     private var height: CGFloat { Self.artworkSize(width: width, aspect: aspect).height }
 
@@ -356,7 +310,7 @@ struct HomePosterCard: View {
             item: item,
             onRemoveFromContinueWatching: onRemoveFromContinueWatching,
             onSetWatched: onSetWatched,
-            playedOverride: $playedOverride
+            personalState: personalState
         ))
     }
 
@@ -468,13 +422,13 @@ struct HomeStillCard: View {
     /// Replaces opening detail and drops the direct-play action; see `HomeCardTap.onTap`.
     var onTap: (() -> Void)? = nil
 
-    /// Optimistic watched state, shared with the menu — see `HomePosterCard`.
-    @State private var playedOverride: Bool?
+    /// Optimistic personal state, shared with the menu — see `HomePosterCard`.
+    @State private var personalState = MediaCardPersonalState()
     @EnvironmentObject private var overlayStore: OverlayPrefsStore
     @Environment(\.browseLibraryId) private var playbackLibraryId
     @Environment(AppRouter.self) private var router
 
-    private var isPlayed: Bool { playedOverride ?? (item.userState?.played == true) }
+    private var isPlayed: Bool { personalState.isPlayed(item.userState) }
 
     private var height: CGFloat { Self.artworkSize(width: width).height }
 
@@ -516,7 +470,7 @@ struct HomeStillCard: View {
             item: item,
             onRemoveFromContinueWatching: onRemoveFromContinueWatching,
             onSetWatched: onSetWatched,
-            playedOverride: $playedOverride
+            personalState: personalState
         ))
     }
 
