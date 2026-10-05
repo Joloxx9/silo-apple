@@ -6761,6 +6761,9 @@ class PlayerViewModel {
         // playback does.
         let finalPosition = completionProgressPositionForCurrentItem()
         let scrubPreviewShutdown = disposeAetherPlayback()
+        #if os(macOS)
+        aetherPlaybackController.releaseDisplaySleepPrevention()
+        #endif
 
         let connectivityToken = realtimeConnectivityObserverToken
         realtimeConnectivityObserverToken = nil
