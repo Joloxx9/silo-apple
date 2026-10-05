@@ -272,6 +272,7 @@ class ItemDetailViewModel {
 
         do {
             let userStateGeneration = userStateMutationGeneration
+            let ratingGeneration = ratingRevision
             personalStateOwner = await TokenStore.shared.captureOrdinaryRequestAuth()
 
             let item: ItemDetail
@@ -312,13 +313,13 @@ class ItemDetailViewModel {
             // A Watched tap made while this request was in flight wins.
             if userStateMutationGeneration == userStateGeneration {
                 isWatched = enriched.userData?.played ?? false
-                // The optimistic rating only had to bridge its own write. Once
-                // no write is waiting, this payload is authoritative, so
-                // release it: tvOS keeps a detail model across visits, and a
-                // kept override would hide a rating changed on another client
-                // for as long as the model lives. While a write is in flight
-                // the payload may predate it, so the override stays.
-                if pendingRatingWrites == 0 {
+                // The optimistic rating only had to bridge its own write, and
+                // a kept override would hide a rating changed on another
+                // client for as long as this model lives — tvOS keeps one
+                // across visits. Released only when no rating write started or
+                // finished while this read was in flight, so the payload is
+                // known to be newer than the rating it would replace.
+                if ratingRevision == ratingGeneration {
                     ratingOverride = nil
                 }
             }
@@ -1510,10 +1511,12 @@ class ItemDetailViewModel {
     /// write made the rating's own completion look superseded, so a failed
     /// write never took its override back down.
     private var ratingMutationGeneration = 0
-    /// Rating writes still waiting for an answer. A refresh must not release
-    /// the override while one is in flight, or a detail payload that left
-    /// before the write lands clears the value the viewer just chose.
-    private var pendingRatingWrites = 0
+    /// Advances when a rating write starts and again when it finishes, so a
+    /// detail read can tell whether it was dispatched after the write it would
+    /// reconcile. A read that merely finds no write in flight is not enough: a
+    /// read dispatched before the write returns to a settled counter and would
+    /// clear the override with a payload that predates the rating.
+    private var ratingRevision = 0
     var userRating: Int? {
         if case .some(let pending) = ratingOverride { return pending }
         return detail?.userRating
@@ -1528,8 +1531,8 @@ class ItemDetailViewModel {
         guard let contentId = detail?.contentId else { return }
         ratingMutationGeneration += 1
         let generation = ratingMutationGeneration
-        pendingRatingWrites += 1
-        defer { pendingRatingWrites -= 1 }
+        ratingRevision += 1
+        defer { ratingRevision += 1 }
         let requested = stars
         ratingOverride = .some(requested)
         let owner = await currentPersonalStateOwner()
