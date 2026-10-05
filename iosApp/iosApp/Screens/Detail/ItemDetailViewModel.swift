@@ -312,11 +312,15 @@ class ItemDetailViewModel {
             // A Watched tap made while this request was in flight wins.
             if userStateMutationGeneration == userStateGeneration {
                 isWatched = enriched.userData?.played ?? false
-                // The optimistic rating only had to bridge its own write. This
-                // payload is authoritative, so release it: tvOS keeps a detail
-                // model across visits, and a kept override would hide a rating
-                // changed on another client for as long as the model lives.
-                ratingOverride = nil
+                // The optimistic rating only had to bridge its own write. Once
+                // no write is waiting, this payload is authoritative, so
+                // release it: tvOS keeps a detail model across visits, and a
+                // kept override would hide a rating changed on another client
+                // for as long as the model lives. While a write is in flight
+                // the payload may predate it, so the override stays.
+                if pendingRatingWrites == 0 {
+                    ratingOverride = nil
+                }
             }
 
             #if os(tvOS)
@@ -1500,6 +1504,16 @@ class ItemDetailViewModel {
     /// pressed. The outer optional means "no override"; the inner one carries
     /// "unrated".
     private var ratingOverride: Int??
+    /// Ownership token for rating writes. Separate from
+    /// `userStateMutationGeneration`, which the favorite, watchlist and watched
+    /// toggles also bump: sharing it meant an unrelated toggle during a rating
+    /// write made the rating's own completion look superseded, so a failed
+    /// write never took its override back down.
+    private var ratingMutationGeneration = 0
+    /// Rating writes still waiting for an answer. A refresh must not release
+    /// the override while one is in flight, or a detail payload that left
+    /// before the write lands clears the value the viewer just chose.
+    private var pendingRatingWrites = 0
     var userRating: Int? {
         if case .some(let pending) = ratingOverride { return pending }
         return detail?.userRating
@@ -1512,8 +1526,10 @@ class ItemDetailViewModel {
     /// they already have means to keep it, not to remove it.
     func setRating(_ stars: Int?) async {
         guard let contentId = detail?.contentId else { return }
-        userStateMutationGeneration += 1
-        let generation = userStateMutationGeneration
+        ratingMutationGeneration += 1
+        let generation = ratingMutationGeneration
+        pendingRatingWrites += 1
+        defer { pendingRatingWrites -= 1 }
         let requested = stars
         ratingOverride = .some(requested)
         let owner = await currentPersonalStateOwner()
@@ -1534,7 +1550,7 @@ class ItemDetailViewModel {
             // only while this write still owns the control. A later rating made
             // during this request wins, and clearing its override here would
             // show the older value for a write that did land.
-            if userStateMutationGeneration == generation {
+            if ratingMutationGeneration == generation {
                 ratingOverride = nil
             }
             personalStateNotice = PersonalStateNotice(outcome)
