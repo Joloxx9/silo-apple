@@ -316,10 +316,10 @@ class ItemDetailViewModel {
                 // The optimistic rating only had to bridge its own write, and
                 // a kept override would hide a rating changed on another
                 // client for as long as this model lives — tvOS keeps one
-                // across visits. Released only when no rating write started or
-                // finished while this read was in flight, so the payload is
-                // known to be newer than the rating it would replace.
-                if ratingRevision == ratingGeneration {
+                // across visits. Released only when this read spanned no
+                // rating write and none is open, so its payload is known to be
+                // newer than the rating it would replace.
+                if pendingRatingWrites == 0, ratingRevision == ratingGeneration {
                     ratingOverride = nil
                 }
             }
@@ -1511,12 +1511,18 @@ class ItemDetailViewModel {
     /// write made the rating's own completion look superseded, so a failed
     /// write never took its override back down.
     private var ratingMutationGeneration = 0
-    /// Advances when a rating write starts and again when it finishes, so a
-    /// detail read can tell whether it was dispatched after the write it would
-    /// reconcile. A read that merely finds no write in flight is not enough: a
-    /// read dispatched before the write returns to a settled counter and would
-    /// clear the override with a payload that predates the rating.
+    /// Advances when a rating write starts and again when it finishes.
     private var ratingRevision = 0
+    /// Rating writes still waiting for an answer.
+    ///
+    /// Both are needed, because they cover different windows. The revision
+    /// catches a write that began or ended while a detail read was in flight.
+    /// The count catches a write that began before that read captured the
+    /// revision and is still open: the captured value already includes its
+    /// start, so equality holds for the whole read. Together they say the read
+    /// spanned no rating write and none is open, which is the only state in
+    /// which its payload is known to be newer than the override.
+    private var pendingRatingWrites = 0
     var userRating: Int? {
         if case .some(let pending) = ratingOverride { return pending }
         return detail?.userRating
@@ -1532,7 +1538,11 @@ class ItemDetailViewModel {
         ratingMutationGeneration += 1
         let generation = ratingMutationGeneration
         ratingRevision += 1
-        defer { ratingRevision += 1 }
+        pendingRatingWrites += 1
+        defer {
+            pendingRatingWrites -= 1
+            ratingRevision += 1
+        }
         let requested = stars
         ratingOverride = .some(requested)
         let owner = await currentPersonalStateOwner()
