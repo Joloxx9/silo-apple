@@ -647,6 +647,7 @@ class ItemDetailViewModel {
                 airDate: item.airDate,
                 isSpecials: item.isSpecials,
                 userData: item.userData,
+                userRating: item.userRating,
                 versions: watchDetail.versions,
                 playbackVariants: item.playbackVariants,
                 subtitles: watchDetail.subtitles,
@@ -1487,6 +1488,47 @@ class ItemDetailViewModel {
         }
     }
 
+    /// The acting profile's own rating, 1 to 5 stars, or nil when unrated.
+    ///
+    /// Reads through to the loaded detail unless a write is in flight, so a
+    /// detail refresh that lands mid-write cannot revert what the viewer just
+    /// pressed. The outer optional means "no override"; the inner one carries
+    /// "unrated".
+    private var ratingOverride: Int??
+    var userRating: Int? {
+        if case .some(let pending) = ratingOverride { return pending }
+        return detail?.userRating
+    }
+
+    /// Record the viewer's rating, or clear it when `stars` is nil.
+    ///
+    /// The control carries its own "no rating" position, so this sets exactly
+    /// what it was given rather than toggling: a viewer who picks the rating
+    /// they already have means to keep it, not to remove it.
+    func setRating(_ stars: Int?) async {
+        guard let contentId = detail?.contentId else { return }
+        let requested = stars
+        ratingOverride = .some(requested)
+        let owner = await currentPersonalStateOwner()
+        let outcome = await PersonalStateSync.outcome {
+            guard let owner else { throw HTTPError.requestIdentityChanged }
+            let api = SiloAPI.shared.apiV2Client
+            if let requested {
+                try await api.setRating(id: contentId, stars: requested, auth: owner)
+            } else {
+                try await api.clearRating(id: contentId, auth: owner)
+            }
+        }
+        if outcome == .applied {
+            invalidateRelatedCaches(contentId: contentId)
+        } else {
+            // Drop the override so the control falls back to the server's
+            // last known rating rather than showing a write that never landed.
+            ratingOverride = nil
+            personalStateNotice = PersonalStateNotice(outcome)
+        }
+    }
+
     func toggleFavorite() async {
         guard let contentId = detail?.contentId else { return }
         userStateMutationGeneration += 1
@@ -1679,6 +1721,28 @@ class ItemDetailViewModel {
                 coalescesMetadataRequest: false
             )
         }
+    }
+
+    /// Rate a single episode, or clear its rating with `stars == nil`.
+    ///
+    /// Episodes are rated independently of their series: the server keys
+    /// ratings by item id, so an episode's stars never stand in for the
+    /// show's and the show's never stand in for an episode's.
+    func setEpisodeRating(contentId: String, stars: Int?) async -> PersonalStateOutcome {
+        let owner = await currentPersonalStateOwner()
+        let outcome = await PersonalStateSync.outcome {
+            guard let owner else { throw HTTPError.requestIdentityChanged }
+            let api = SiloAPI.shared.apiV2Client
+            if let stars {
+                try await api.setRating(id: contentId, stars: stars, auth: owner)
+            } else {
+                try await api.clearRating(id: contentId, auth: owner)
+            }
+        }
+        if outcome == .applied {
+            invalidateRelatedCaches(contentId: contentId)
+        }
+        return outcome
     }
 
     func setEpisodeFavorite(contentId: String, isFavorite: Bool) async -> PersonalStateOutcome {
