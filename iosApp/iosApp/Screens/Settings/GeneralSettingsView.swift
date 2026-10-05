@@ -31,11 +31,7 @@ struct GeneralSettingsView: View {
                 }
             }
             .foregroundStyle(Color.siloOnSurface)
-            #if os(macOS)
-            .pickerStyle(.menu)
-            #else
-            .pickerStyle(.navigationLink)
-            #endif
+            .settingsPickerStyle()
             .accessibilityValue(launchPreferences.behavior.title)
             .accessibilityHint(launchPreferences.behavior.standardDescription)
         } header: {

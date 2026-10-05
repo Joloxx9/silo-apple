@@ -54,7 +54,7 @@ final class AuthService: @unchecked Sendable {
         sessionPersistence: AccountSessionPersistence = AccountSessionPersistence(keychain: SharedKeychain()),
         purgeDiagnostics: @escaping @Sendable (String) async -> Bool = { serverID in
             #if os(iOS) || os(tvOS)
-            return await DiagnosticsCoordinator.shared.purgeDiagnosticsForServerRegistryID(serverID)
+            return DiagnosticsCoordinator.shared.purgeDiagnosticsForServerRegistryID(serverID)
             #else
             return true
             #endif
@@ -715,12 +715,20 @@ final class AuthService: @unchecked Sendable {
     private func clearPerProfileCaches(preservingTrailerReturn: Bool = false, preservingWatchPartyRecent: Bool = false) {
         StartupContentPrefetcher.resetProfileScopedPrefetches()
         for prefix in CacheKey.perProfilePrefixes {
-            ResponseCache.shared.removeAll(withPrefix: prefix)
+            ResponseCache.shared.clearMemory(withPrefix: prefix)
         }
-        PersonalStateHolds.shared.reset()
         // Profiles are account-scoped and are the offline source for Who's
         // Watching. Keep that list across profile transitions; server/account
         // boundaries still clear it through `clearAllCaches()`.
+        resetIdentityScopedStores(forgetWatchPartyRecent: !preservingWatchPartyRecent,
+                                  preservingTrailerReturn: preservingTrailerReturn)
+    }
+
+    /// The in-memory stores both cache boundaries reset, after their own
+    /// prefetch and response-cache clearing.
+    @MainActor
+    private func resetIdentityScopedStores(forgetWatchPartyRecent: Bool, preservingTrailerReturn: Bool) {
+        PersonalStateHolds.shared.reset()
         // Overlay prefs are stored at profile scope (`ui.card_overlays`),
         // so the next profile must re-read them.
         OverlayPrefsStore.shared.clear()
@@ -732,7 +740,7 @@ final class AuthService: @unchecked Sendable {
         // profile switch; `selectProfile` re-fetches after the switch lands.
         AICapabilities.shared.reset()
         ImageSizeCapability.shared.reset()
-        WatchPartySession.shared.leave(forgetRecent: !preservingWatchPartyRecent)
+        WatchPartySession.shared.leave(forgetRecent: forgetWatchPartyRecent)
         RequestsFeatureStore.shared.reset()
         CurrentProfileStore.shared.reset()
         SubtitleProvidersStore.shared.reset()
@@ -867,32 +875,20 @@ final class AuthService: @unchecked Sendable {
     private func clearAllCaches() {
         StartupContentPrefetcher.resetAllPrefetches()
         ResponseCache.shared.clearAll()
-        PersonalStateHolds.shared.reset()
-        OverlayPrefsStore.shared.clear()
-        AdvisoryAgePreferenceStore.shared.clear()
-        ProfilePrefsStore.shared.clear()
-        AICapabilities.shared.reset()
-        ImageSizeCapability.shared.reset()
-        WatchPartySession.shared.leave(forgetRecent: true)
-        RequestsFeatureStore.shared.reset()
-        CurrentProfileStore.shared.reset()
-        SubtitleProvidersStore.shared.reset()
-        RequestsEventBus.shared.reset()
-        #if os(tvOS)
-        ItemDetailCache.shared.clearAll()
-        // The identity check in TrailerReturnPolicy already refuses a record
-        // across identities; deleting here keeps the outgoing identity's
-        // browsing out of plaintext defaults on a shared device.
-        TVTrailerReturnStore.shared.clear()
-        #endif
+        resetIdentityScopedStores(forgetWatchPartyRecent: true, preservingTrailerReturn: false)
     }
 
     /// A remote-playback handoff changes server/account/profile without
     /// touching the persistent registry. Treat both entry and restoration as
     /// full auth boundaries so cached user data cannot cross identities.
+    /// The owner's on-disk snapshots are kept, and while `temporaryIdentityActive`
+    /// none are written or read: the persisted profile still names the owner.
     @MainActor
-    func clearCachesForTemporaryIdentityChange() {
-        clearAllCaches()
+    func clearCachesForTemporaryIdentityChange(temporaryIdentityActive: Bool) {
+        StartupContentPrefetcher.resetAllPrefetches()
+        ResponseCache.shared.clearMemory()
+        ResponseCache.shared.snapshotsSuspended = temporaryIdentityActive
+        resetIdentityScopedStores(forgetWatchPartyRecent: true, preservingTrailerReturn: false)
     }
 
     /// A server switch is the same hard identity boundary as sign-out for
