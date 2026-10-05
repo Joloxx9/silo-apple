@@ -259,12 +259,21 @@ struct IOSSettingsOverview: View {
             }
 
             NavigationLink {
-                OpenSourceAcknowledgementsView()
+                AcknowledgementsView()
             } label: {
                 SettingsOverviewRow(
-                    title: "Open Source Licenses",
-                    subtitle: "Acknowledgements, licenses, and exact source revisions",
+                    title: "Acknowledgements",
+                    subtitle: "Services Silo uses, and open source licenses",
                     systemImage: "curlybraces"
+                )
+            }
+
+            Link(destination: SiloLegalLinks.sourceCode) {
+                SettingsOverviewRow(
+                    title: "Source Code",
+                    subtitle: "Get Silo's source code under the AGPL",
+                    systemImage: "chevron.left.forwardslash.chevron.right",
+                    showsChevron: true
                 )
             }
         }
@@ -359,7 +368,12 @@ struct IOSSettingsOverview: View {
             "information",
             "open source",
             "licenses",
-            "acknowledgements"
+            "acknowledgements",
+            "source code",
+            "AGPL",
+            "credits",
+            "attribution",
+            "TMDB"
         )
     }
 

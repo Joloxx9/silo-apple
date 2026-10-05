@@ -599,7 +599,7 @@ struct TVSettingsView: View {
                 HStack(spacing: 16) {
                     Image(systemName: "curlybraces")
                         .font(.system(size: 22, weight: .medium))
-                    Text("Open Source Licenses")
+                    Text("Acknowledgements")
                         .font(.system(size: 26))
                     Spacer(minLength: 0)
                     Image(systemName: "doc.text.magnifyingglass")
