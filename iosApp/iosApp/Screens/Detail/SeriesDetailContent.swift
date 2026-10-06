@@ -27,7 +27,14 @@ struct SeriesDetailContent<BelowOverview: View>: View {
     let isLoadingSelectedEpisodePlayback: Bool
     let selectedEpisodeContentId: String?
     let onSelectSeason: (Season) -> Void
-    let onPlayEpisode: (_ contentId: String, _ fileId: Int?, _ startFromBeginning: Bool) -> Void
+    /// `resumePosition` is the point the user was offered (nil for a
+    /// restart or an episode without progress).
+    let onPlayEpisode: (
+        _ contentId: String, _ fileId: Int?, _ startFromBeginning: Bool, _ resumePosition: Double?
+    ) -> Void
+    /// Reads the episode's current watch state from the server, so the
+    /// resume prompt never offers a position another device has moved past.
+    let refreshResumeState: (_ contentId: String) async -> DetailResumeState
     let onEpisodeTap: (String) -> Void
     let onSelectNextUpVersion: (Int?) -> Void
     let onSelectNextUpAudioTrack: (Int?) -> Void
@@ -64,7 +71,13 @@ struct SeriesDetailContent<BelowOverview: View>: View {
     @Environment(AppRouter.self) private var router
     @State private var shuffleLauncher = ShuffleLauncher()
     @State private var hierarchyRetryTask: Task<Void, Never>?
-    @State private var pendingResumeEpisode: EpisodeListItem?
+    private struct PendingResume {
+        let episode: EpisodeListItem
+        let position: Double
+    }
+    @State private var pendingResume: PendingResume?
+    /// The Play tap's in-flight watch-state read. A second tap replaces it.
+    @State private var resumeLookupTask: Task<Void, Never>?
     @State private var isUpdatingWatched = false
     @State private var watchedUpdateFailed = false
     @State private var watchedNotice: PersonalStateNotice?
@@ -104,20 +117,23 @@ struct SeriesDetailContent<BelowOverview: View>: View {
         }
         .siloResumePlaybackAlert(
             isPresented: Binding(
-                get: { pendingResumeEpisode != nil },
-                set: { if !$0 { pendingResumeEpisode = nil } }
+                get: { pendingResume != nil },
+                set: { if !$0 { pendingResume = nil } }
             ),
             stoppedAt: resumeTimestamp
         ) {
-            guard let episode = pendingResumeEpisode else { return }
-            onPlayEpisode(episode.contentId, playbackFileId(for: episode), false)
+            guard let pendingResume else { return }
+            let episode = pendingResume.episode
+            onPlayEpisode(episode.contentId, playbackFileId(for: episode), false, pendingResume.position)
         } onRestart: {
-            guard let episode = pendingResumeEpisode else { return }
-            onPlayEpisode(episode.contentId, playbackFileId(for: episode), true)
+            guard let episode = pendingResume?.episode else { return }
+            onPlayEpisode(episode.contentId, playbackFileId(for: episode), true, nil)
         }
         .onDisappear {
             hierarchyRetryTask?.cancel()
             hierarchyRetryTask = nil
+            resumeLookupTask?.cancel()
+            resumeLookupTask = nil
             pendingEpisodePlayRequest = nil
         }
         .onChange(of: hierarchyError) { _, error in
@@ -366,10 +382,16 @@ struct SeriesDetailContent<BelowOverview: View>: View {
     }
 
     private func handlePlayTap(for episode: EpisodeListItem) {
-        if episode.userData?.isInProgress == true {
-            pendingResumeEpisode = episode
-        } else {
-            onPlayEpisode(episode.contentId, playbackFileId(for: episode), false)
+        resumeLookupTask?.cancel()
+        resumeLookupTask = Task {
+            let state = await refreshResumeState(episode.contentId)
+            guard !Task.isCancelled else { return }
+            resumeLookupTask = nil
+            if let position = state.resumePosition(cached: episode.userData) {
+                pendingResume = PendingResume(episode: episode, position: position)
+            } else {
+                onPlayEpisode(episode.contentId, playbackFileId(for: episode), false, nil)
+            }
         }
     }
 
@@ -464,15 +486,8 @@ struct SeriesDetailContent<BelowOverview: View>: View {
     }
 
     private var resumeTimestamp: String {
-        guard let pos = resumePositionSeconds(for: pendingResumeEpisode) else { return "0:00" }
+        guard let pos = pendingResume?.position else { return "0:00" }
         return PlayerTimeFormatter.formatHMS(pos)
-    }
-
-    private func resumePositionSeconds(for episode: EpisodeListItem?) -> Double? {
-        PlaybackResumePoint.position(
-            episode?.userData?.positionSeconds,
-            duration: episode?.userData?.durationSeconds
-        )
     }
 
     /// Version/audio/subtitle state belongs only to the currently selected
