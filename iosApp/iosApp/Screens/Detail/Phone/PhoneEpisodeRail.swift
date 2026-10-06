@@ -247,7 +247,8 @@ private struct PhoneEpisodeCard: View {
                 url: episode.stillUrl ?? "",
                 thumbhash: episode.stillThumbhash,
                 targetSize: CGSize(width: cardWidth, height: stillHeight),
-                contentMode: .fill
+                contentMode: .fill,
+                placeholderSymbol: ArtworkPlaceholderSymbol.forMediaType("episode")
             )
             .frame(width: cardWidth, height: stillHeight)
             .clipped()

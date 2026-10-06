@@ -77,6 +77,7 @@ struct CatalogGrid: View {
                     title: item.title,
                     posterUrl: item.posterUrl ?? "",
                     thumbhash: item.posterThumbhash,
+                    mediaType: item.type,
                     year: item.year,
                     userState: item.userState,
                     overlayData: OverlayData.from(item),
