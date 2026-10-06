@@ -175,30 +175,23 @@ struct BrowseView: View {
         .padding(.horizontal, SiloTheme.padding)
     }
 
-    // MARK: - Control bar (Sort + Filter)
+    // MARK: - Control bar (Sort + Filter + Shuffle)
 
     private var controlBar: some View {
-        HStack(spacing: 9) {
-            sortMenu
-            Button { showFilters = true } label: {
-                controlChip(
-                    icon: "line.3.horizontal.decrease",
-                    text: "Filter",
-                    badge: viewModel.filterState.activeFacetCount
-                )
+        // At accessibility text sizes the chips no longer fit side by
+        // side and SwiftUI broke their labels mid-word; stack them instead.
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 9) {
+                sortMenu
+                filterButton
+                shuffleButton
+                Spacer(minLength: 0)
             }
-            .buttonStyle(.plain)
-            if let shuffleLibraryId {
-                Button {
-                    shuffleLauncher.start(ShuffleScopeRequest(kind: .library, id: String(shuffleLibraryId)), router: router)
-                } label: {
-                    controlChip(icon: "shuffle", text: "Shuffle")
-                }
-                .buttonStyle(.plain)
-                .disabled(shuffleLauncher.isStarting)
-                .accessibilityIdentifier("library-shuffle")
+            VStack(alignment: .leading, spacing: 9) {
+                sortMenu
+                filterButton
+                shuffleButton
             }
-            Spacer(minLength: 0)
         }
         .padding(.horizontal, SiloTheme.padding)
         .shuffleFailureAlert(shuffleLauncher)
@@ -210,6 +203,31 @@ struct BrowseView: View {
               ShuffleAvailability.isShuffleLibraryType(libraryType),
               ShuffleFeatureStore.shared.supports(.library) else { return nil }
         return libraryId
+    }
+
+    private var filterButton: some View {
+        Button { showFilters = true } label: {
+            controlChip(
+                icon: "line.3.horizontal.decrease",
+                text: "Filter",
+                badge: viewModel.filterState.activeFacetCount
+            )
+        }
+        .buttonStyle(.plain)
+    }
+
+    @ViewBuilder
+    private var shuffleButton: some View {
+        if let shuffleLibraryId {
+            Button {
+                shuffleLauncher.start(ShuffleScopeRequest(kind: .library, id: String(shuffleLibraryId)), router: router)
+            } label: {
+                controlChip(icon: "shuffle", text: "Shuffle")
+            }
+            .buttonStyle(.plain)
+            .disabled(shuffleLauncher.isStarting)
+            .accessibilityIdentifier("library-shuffle")
+        }
     }
 
     private var sortMenu: some View {
