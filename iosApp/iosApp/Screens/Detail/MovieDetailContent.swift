@@ -128,7 +128,7 @@ struct MovieDetailContent<BelowOverview: View>: View {
         VStack(spacing: 14) {
             PhonePrimaryPillButton(
                 icon: "play.fill",
-                title: "Play",
+                title: DetailPlayLabel.item(detail.userData),
                 action: handlePlayTap,
                 fullWidth: true
             )

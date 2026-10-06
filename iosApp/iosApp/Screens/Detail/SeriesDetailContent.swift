@@ -479,10 +479,10 @@ struct SeriesDetailContent<BelowOverview: View>: View {
         return episodes.first
     }
 
-    /// Show "Play S2·E5" — the user can decide resume vs. restart in
-    /// the confirmation dialog the button presents.
+    /// "Resume S2·E5" when the tap offers to resume, else "Play S2·E5". The
+    /// confirmation dialog still lets the user restart instead.
     private func playButtonLabel(for episode: EpisodeListItem) -> String {
-        "Play S\(episode.seasonNumber)·E\(episode.episodeNumber)"
+        DetailPlayLabel.episode(episode)
     }
 
     private var resumeTimestamp: String {
