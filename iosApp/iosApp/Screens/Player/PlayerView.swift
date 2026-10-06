@@ -405,10 +405,13 @@ struct PlayerView: View {
             closePresentation()
         }
         // Hand the user's brightness back while the app is away, and take the
-        // player's level again on return unless the user changed it.
+        // player's level again on return unless the user changed it. Automatic
+        // PiP on backgrounding keeps this cover, so coming back to the app
+        // lands on the player itself; end PiP into it.
         .onChange(of: scenePhase) { _, phase in
             if phase == .active {
                 PlayerScreenBrightness.shared.resume()
+                pictureInPicture.stopForReturnToPresentedPlayer(owner: viewModel)
             } else {
                 PlayerScreenBrightness.shared.suspend()
             }
