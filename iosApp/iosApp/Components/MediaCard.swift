@@ -85,6 +85,9 @@ struct MediaCard: View {
     var focusedItemId: FocusState<String?>.Binding? = nil
 
     var contentId: String? = nil
+    /// An episode card's series and episode. When set, a tap opens the
+    /// series on that episode instead of loading the episode first.
+    var seriesContext: SeriesDetailContext? = nil
     var contextPlayTitle: String? = nil
     var contextDetailTitle: String? = nil
     var onOpenContextDetail: (() -> Void)? = nil
@@ -186,11 +189,19 @@ struct MediaCard: View {
         Group {
             if let contentId {
                 Button {
-                    router.presentItemDetail(
-                        contentId: contentId,
-                        libraryId: browseLibraryId,
-                        browseSource: detailBrowseSource
-                    )
+                    if let seriesContext {
+                        router.presentItemDetail(
+                            contentId: seriesContext.seriesContentId,
+                            libraryId: browseLibraryId,
+                            resumeContext: seriesContext
+                        )
+                    } else {
+                        router.presentItemDetail(
+                            contentId: contentId,
+                            libraryId: browseLibraryId,
+                            browseSource: detailBrowseSource
+                        )
+                    }
                 } label: {
                     cardContent
                 }

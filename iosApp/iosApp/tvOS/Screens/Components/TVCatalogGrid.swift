@@ -67,11 +67,12 @@ struct TVCatalogGrid: View {
                 HStack(alignment: .top, spacing: columnSpacing) {
                     ForEach(Array(row.enumerated()), id: \.element.id) { column, item in
                         TVMediaCard(
-                            title: item.title,
+                            title: EpisodeCardCaption.cardTitle(for: item),
                             posterUrl: item.posterUrl ?? "",
                             posterThumbhash: item.posterThumbhash,
                             mediaType: item.type,
                             year: item.year,
+                            subtitle: EpisodeCardCaption.line(for: item),
                             userState: item.userState,
                             overlayData: OverlayData.from(item),
                             action: { onItemTap(item) },

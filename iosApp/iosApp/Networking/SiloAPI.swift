@@ -304,12 +304,21 @@ actor SiloAPI {
         return person
     }
 
-    /// Whether the server can search people by media scope. The same
-    /// capability guarantees results only carry credits the profile can see,
-    /// so without it search offers no people at all.
-    func peopleSearchSupported() async throws -> Bool {
+    /// The search features this server offers; see ``CatalogSearchFeatures``.
+    /// A server without the capabilities read (v1-only, or answering 404)
+    /// offers none. Any other failure throws: a server that timed out or
+    /// refused the credentials has not said what it supports.
+    func catalogSearchFeatures() async throws -> CatalogSearchFeatures {
         let auth = try await detailReadAuth()
-        return try await apiV2Client.catalogSearchCapabilities(auth: auth).peopleMediaScope == true
+        do {
+            return CatalogSearchFeatures(try await apiV2Client.catalogSearchCapabilities(auth: auth))
+        } catch let error as APIv2Error {
+            switch error {
+            case .serverUpdateRequired, .httpStatus(404): return CatalogSearchFeatures()
+            case .problem(let problem) where problem.status == 404: return CatalogSearchFeatures()
+            default: throw error
+            }
+        }
     }
 
     /// People matching `query` for the acting profile, exact names first.

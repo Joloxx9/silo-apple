@@ -2,7 +2,7 @@ import SwiftUI
 
 /// Full-screen search with debounced query and grid results — Plezy style.
 struct SearchView: View {
-    @State private var viewModel = SearchViewModel(includesPeople: true)
+    @State private var viewModel = SearchViewModel(includesPeople: true, includesEpisodes: true)
     @State private var requestsViewModel = RequestSearchSectionViewModel()
     @State private var navPrefs = AppNavPreferences.shared
     @Environment(AppRouter.self) private var router
@@ -148,12 +148,12 @@ struct SearchView: View {
 
     @ViewBuilder
     private var content: some View {
-        if (viewModel.isSearching || viewModel.isSearchingPeople)
-            && viewModel.results.isEmpty && viewModel.people.isEmpty {
-            Color.clear
-        } else if let error = viewModel.error {
+        switch viewModel.contentState {
+        case .loading:
+            searchLoading
+        case .failed(let error):
             ErrorView(state: error, onRetry: { Task { await viewModel.performSearch() } })
-        } else if viewModel.hasSearched && viewModel.results.isEmpty && viewModel.people.isEmpty {
+        case .noResults:
             VStack {
                 Spacer(minLength: 80)
                 EmptyStateView(
@@ -162,7 +162,7 @@ struct SearchView: View {
                     subtitle: "Try a different search term"
                 )
             }
-        } else if viewModel.results.isEmpty && viewModel.people.isEmpty {
+        case .prompt:
             VStack {
                 Spacer(minLength: 80)
                 EmptyStateView(
@@ -171,7 +171,7 @@ struct SearchView: View {
                     subtitle: "Find movies, series, and people"
                 )
             }
-        } else {
+        case .results:
             VStack(alignment: .leading, spacing: SiloTheme.padding) {
                 if !viewModel.people.isEmpty {
                     peopleSection
@@ -182,6 +182,28 @@ struct SearchView: View {
                 }
             }
         }
+    }
+
+    /// A new search with nothing to show yet: the result grid's own loading
+    /// state, so a slow or unreachable server reads as progress until the
+    /// answer or the request's timeout error arrives.
+    @ViewBuilder
+    private var searchLoading: some View {
+        #if os(tvOS)
+        HStack {
+            Spacer()
+            ProgressView()
+                .tint(.siloOnSurface)
+                .padding()
+            Spacer()
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Searching")
+        #else
+        CatalogGrid(items: [], isLoading: true, hasMore: false, onItemTap: { _ in }, onLoadMore: {})
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("Searching")
+        #endif
     }
 
     /// Matching actors, directors, and other credited people. Each opens

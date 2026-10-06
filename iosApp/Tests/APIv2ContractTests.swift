@@ -359,16 +359,20 @@ final class APIv2ContractTests: XCTestCase {
         XCTAssertEqual(capabilities.resultWindowLimit, 1000)
         XCTAssertEqual(capabilities.peopleMediaScope, true)
         XCTAssertEqual(capabilities.personPrefetch, true)
+        XCTAssertEqual(capabilities.videoWithEpisodesScope, true)
 
         // Only revision, state and allowed are required: an unconfigured
         // server omits the provider and its limits.
         let unconfigured = try Support.mutatedBody(named: "get_catalog_search_capabilities_ok", bundleClass: Self.self) {
             for key in ["provider", "result_window_limit", "session_ttl_seconds", "max_sessions_per_account",
-                        "people_media_scope", "person_prefetch"] { $0.removeValue(forKey: key) }
+                        "people_media_scope", "person_prefetch", "video_with_episodes_scope"] {
+                $0.removeValue(forKey: key)
+            }
             $0["state"] = "not_configured"
         }
         let minimal = try decoder.decode(APIv2CatalogSearchCapabilities.self, from: unconfigured)
         XCTAssertNil(minimal.provider)
+        XCTAssertNil(minimal.videoWithEpisodesScope)
         XCTAssertFalse(minimal.isAvailable)
 
         let denied = try Support.mutatedBody(named: "get_catalog_search_capabilities_ok", bundleClass: Self.self) {

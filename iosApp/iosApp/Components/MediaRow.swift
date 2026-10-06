@@ -605,10 +605,10 @@ struct MediaRow: View {
     }
     #endif
 
-    /// Caption for a poster card. Episodes are captioned with the series name
-    /// — the bare `title` is the episode title (often "TBA" when unannounced).
+    /// Caption for a poster card. Episodes are captioned with the series name;
+    /// see `EpisodeCardCaption.cardTitle(for:)`.
     private func posterTitle(for item: SectionItem) -> String {
-        item.type.lowercased() == "episode" ? (item.seriesTitle ?? item.title) : item.title
+        EpisodeCardCaption.cardTitle(for: item)
     }
 
     /// Episode context for accessibility when a poster is captioned with its

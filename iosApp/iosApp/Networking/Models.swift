@@ -31,6 +31,13 @@ struct BrowseItem: Codable, Identifiable, Hashable {
     let lastAirDate: String?
     let userState: MediaItemUserState?
     let overlaySummary: OverlaySummary?
+    /// Episode context; the server sends it on episode rows (text search
+    /// with the `video_with_episodes` or `episode` scope) and omits it
+    /// elsewhere.
+    var seriesId: String? = nil
+    var seriesTitle: String? = nil
+    var seasonNumber: Int? = nil
+    var episodeNumber: Int? = nil
     var id: String { contentId }
 }
 
@@ -137,10 +144,10 @@ struct SectionItem: Codable, Identifiable, Hashable {
         contentId = item.contentId
         type = item.type
         title = item.title
-        seriesId = nil
-        seriesTitle = nil
-        seasonNumber = nil
-        episodeNumber = nil
+        seriesId = item.seriesId
+        seriesTitle = item.seriesTitle
+        seasonNumber = item.seasonNumber
+        episodeNumber = item.episodeNumber
         year = item.year
         genres = item.genres
         status = item.status
@@ -294,7 +301,11 @@ extension BrowseItem {
             releaseDate: nil,
             lastAirDate: nil,
             userState: item.userState,
-            overlaySummary: item.overlaySummary
+            overlaySummary: item.overlaySummary,
+            seriesId: item.seriesId,
+            seriesTitle: item.seriesTitle,
+            seasonNumber: item.seasonNumber,
+            episodeNumber: item.episodeNumber
         )
     }
 }

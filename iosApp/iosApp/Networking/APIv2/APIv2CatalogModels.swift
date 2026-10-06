@@ -39,8 +39,34 @@ struct APIv2CatalogSearchCapabilities: Decodable {
     let peopleMediaScope: Bool?
     /// Person reads accept `prefetch=true` without queueing a refresh.
     let personPrefetch: Bool?
+    /// Text search accepts `type=video_with_episodes` (movies, series, and
+    /// episodes) on the query source, and people search accepts it as
+    /// `media_scope`. Older servers omit it and ignore or reject the value.
+    let videoWithEpisodesScope: Bool?
 
     var isAvailable: Bool { allowed && state == "available" }
+}
+
+/// What the Search screen may ask of this server, read once from
+/// ``APIv2CatalogSearchCapabilities``. An absent flag means unsupported.
+struct CatalogSearchFeatures: Equatable {
+    /// People search accepts `media_scope` and filters credits by access.
+    /// Without it search offers no people at all.
+    var peopleMediaScope = false
+    /// Search accepts the `video_with_episodes` media scope.
+    var videoWithEpisodesScope = false
+
+    init(peopleMediaScope: Bool = false, videoWithEpisodesScope: Bool = false) {
+        self.peopleMediaScope = peopleMediaScope
+        self.videoWithEpisodesScope = videoWithEpisodesScope
+    }
+
+    init(_ capabilities: APIv2CatalogSearchCapabilities) {
+        self.init(
+            peopleMediaScope: capabilities.peopleMediaScope == true,
+            videoWithEpisodesScope: capabilities.videoWithEpisodesScope == true
+        )
+    }
 }
 
 enum APIv2CatalogRuleValue: Encodable, Hashable {
