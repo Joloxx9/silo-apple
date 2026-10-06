@@ -126,6 +126,12 @@ struct PlayerView: View {
             ZStack(alignment: .top) {
                 if let error = viewModel.error {
                     errorView(error)
+                        #if os(iOS)
+                        // Centred in the player rather than pinned to the top
+                        // edge, where it ran under the status bar in portrait
+                        // and against the screen edge in landscape.
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        #endif
                     #if os(iOS)
                     loadingCloseButton
                     #endif
@@ -729,7 +735,11 @@ struct PlayerView: View {
         .padding(.horizontal)
         .padding(.top)
         .transition(.opacity)
-        .modifier(MobilePlayerChromeVisibility(isVisible: viewModel.shouldShowMobilePlayerChrome))
+        // Nothing is playing behind an error, so its close button stays up
+        // instead of waiting for a tap that reveals the transport chrome.
+        .modifier(MobilePlayerChromeVisibility(
+            isVisible: viewModel.shouldShowMobilePlayerChrome || viewModel.error != nil
+        ))
     }
     #endif
 
