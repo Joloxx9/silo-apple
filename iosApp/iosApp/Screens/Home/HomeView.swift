@@ -242,20 +242,17 @@ struct HomeView: View {
 
     #if !os(tvOS)
     private func feedScrollView(topSafeAreaInset: CGFloat) -> some View {
-        ScrollView(.vertical, showsIndicators: false) {
+        let sections = feedSections
+        return ScrollView(.vertical, showsIndicators: false) {
             LazyVStack(alignment: .leading, spacing: HomeFeedMetrics.sectionSpacing) {
                 // Clear runway under the pinned header so the first row
                 // starts below the wordmark and utilities.
                 Color.clear
                     .frame(height: topRunwaySpacing(topSafeAreaInset: topSafeAreaInset))
 
-                ForEach(displayedSections) { section in
-                    HomeFeedRow(
-                        section: section,
-                        onRemoveFromContinueWatching: dismissContinueWatching,
-                        onSetWatched: setWatched
-                    )
-                    .onAppear { warmRows(after: section) }
+                ForEach(sections) { section in
+                    feedSection(section, leadsPage: section.id == sections.first?.id)
+                        .onAppear { warmRows(after: section) }
                 }
             }
             .padding(.bottom, HomeFeedMetrics.bottomRunway)
@@ -263,10 +260,47 @@ struct HomeView: View {
         .reportsPageChromeScroll(to: chromeScrollState)
     }
 
+    /// The displayed rows in feed order. The Mac draws the first featured
+    /// section as a hero at the top of the page wherever it sits in the Home
+    /// order, as web does; any other featured section stays a row in place.
+    private var feedSections: [ResolvedSection] {
+        var sections = displayedSections
+        #if os(macOS)
+        if let index = sections.firstIndex(where: \.isFeatured), index > 0 {
+            sections.insert(sections.remove(at: index), at: 0)
+        }
+        #endif
+        return sections
+    }
+
+    @ViewBuilder
+    private func feedSection(_ section: ResolvedSection, leadsPage: Bool) -> some View {
+        #if os(macOS)
+        if leadsPage, section.isFeatured {
+            MacFeaturedHero(section: section)
+                // The hero sits flush with the top of the window, so it takes
+                // back the stack's leading gap and the page's top margin.
+                .padding(.top, -(HomeFeedMetrics.sectionSpacing + SiloTheme.padding))
+        } else {
+            feedRow(section)
+        }
+        #else
+        feedRow(section)
+        #endif
+    }
+
+    private func feedRow(_ section: ResolvedSection) -> some View {
+        HomeFeedRow(
+            section: section,
+            onRemoveFromContinueWatching: dismissContinueWatching,
+            onSetWatched: setWatched
+        )
+    }
+
     /// Decode the leading cards of the rows below one that appeared, so
     /// scrolling down reveals painted artwork rather than thumbhashes.
     private func warmRows(after section: ResolvedSection) {
-        let sections = displayedSections
+        let sections = feedSections
         guard let index = sections.firstIndex(where: { $0.id == section.id }) else { return }
         let next = sections.dropFirst(index + 1).prefix(ArtworkLookahead.rowsAhead)
         ArtworkLookahead.warmRows(next, items: \.items) { section, item in
