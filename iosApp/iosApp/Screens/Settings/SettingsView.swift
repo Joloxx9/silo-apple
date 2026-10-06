@@ -71,11 +71,7 @@ struct SettingsView: View {
             aboutSection
             signOutSection
         }
-        #if os(macOS)
         .settingsListChrome()
-        #else
-        .siloGroupedListStyle()
-        #endif
         .navigationTitle("Settings")
         .siloNavigationTitleDisplayMode(.large)
         .siloToolbarColorSchemeDark()
@@ -238,15 +234,14 @@ struct SettingsView: View {
 
     private var aboutSection: some View {
         Section("About") {
-            LabeledContent {
-                Text(SettingsViewModel.versionString)
-                    .foregroundStyle(Color.siloSecondaryText)
-            } label: {
-                Text("Version")
-                    .foregroundStyle(Color.siloOnSurface)
-            }
+            SettingsRowLabel(
+                title: "Version",
+                systemImage: "info",
+                color: .gray,
+                value: SettingsViewModel.versionString
+            )
 
-            Link("Privacy Policy", destination: SiloLegalLinks.privacyPolicy)
+            externalLink("Privacy Policy", systemImage: "hand.raised.fill", SiloLegalLinks.privacyPolicy)
 
             NavigationLink {
                 AcknowledgementsView()
@@ -258,7 +253,30 @@ struct SettingsView: View {
                 )
             }
 
-            Link("Source Code", destination: SiloLegalLinks.sourceCode)
+            externalLink(
+                "Source Code",
+                systemImage: "chevron.left.forwardslash.chevron.right",
+                SiloLegalLinks.sourceCode
+            )
+        }
+    }
+
+    /// A row that opens a web page, with the same icon tile as the rows
+    /// around it so every label in the section shares one leading edge. The
+    /// arrow marks it as opening in the browser.
+    private func externalLink(
+        _ title: String,
+        systemImage: String,
+        _ destination: URL
+    ) -> some View {
+        Link(destination: destination) {
+            HStack {
+                SettingsRowLabel(title: title, systemImage: systemImage, color: .gray)
+                Image(systemName: "arrow.up.right")
+                    .font(.footnote.weight(.semibold))
+                    .foregroundStyle(Color.siloSecondaryText.opacity(0.6))
+            }
+            .contentShape(Rectangle())
         }
     }
 
@@ -270,8 +288,17 @@ struct SettingsView: View {
                 showSignOutConfirm = true
             } label: {
                 Text("Sign Out")
+                    .font(.siloBody.weight(.semibold))
+                    .foregroundStyle(Color.siloErrorInk)
                     .frame(maxWidth: .infinity)
+                    .padding(.vertical, SiloTheme.smallPadding)
+                    .background(
+                        RoundedRectangle(cornerRadius: SiloTheme.cornerRadius, style: .continuous)
+                            .fill(Color.siloErrorInk.opacity(0.12))
+                    )
+                    .contentShape(Rectangle())
             }
+            .buttonStyle(.plain)
         }
     }
     #endif
@@ -289,10 +316,14 @@ struct SettingsRowLabel: View {
     let color: Color
     var value: String? = nil
 
+    /// The Mac keeps its chrome monochrome, so every tile is the same grey
+    /// whatever `color` a row passes.
+    private var tileFill: Color { .siloIconTile }
+
     var body: some View {
         HStack(spacing: 12) {
             RoundedRectangle(cornerRadius: 7)
-                .fill(color.gradient)
+                .fill(tileFill)
                 .frame(width: 29, height: 29)
                 .overlay {
                     Image(systemName: systemImage)
