@@ -529,12 +529,7 @@ struct PlayerView: View {
                 // A Home request may have started as the cover disappeared.
                 // Retire that generation before asking for the authoritative
                 // Continue Watching row produced by the completed write.
-                StartupContentPrefetcher.invalidateHomeSectionsInFlight()
-                ResponseCache.shared.remove(CacheKey.homeSections)
-                NotificationCenter.default.post(
-                    name: .homeSectionsShouldRefresh,
-                    object: nil
-                )
+                PersonalStateSync.invalidateDerivedLists()
 
                 await ItemDetailCache.shared.refreshAfterPlayback(contentIds: touchedContentIds)
             }
