@@ -90,6 +90,9 @@ enum PlaybackProgressReportResult: Equatable {
 struct PlaybackV3TerminalFailure: LocalizedError, Equatable {
     let reason: String
     let message: String
+    /// Whether starting playback again can help. False only when a fresh
+    /// session would fail the same way: the server's terminal outcome says
+    /// so, or the server or profile cannot play at all until it changes.
     let retryable: Bool
 
     var errorDescription: String? { message }
@@ -1297,12 +1300,17 @@ actor PlaybackSessionBridge {
     /// operation. A user-initiated track or quality change is an intent, not a
     /// failure, and carries no `failure` block.
     ///
+    /// A lost connection is not a failed route either (§6.2): the reconnect
+    /// asks for the current route again with a `track_change` that changes
+    /// nothing, which keeps that route eligible where `failure_recovery`
+    /// would exclude it.
+    ///
     /// This overload predates `output_change_v1` and keeps an output-route
     /// change on `failure_recovery`. Prefer the `serverFeatures` overload:
     /// only that one can tell whether the server offers the intent operation.
     static func replanOperation(forClassification classification: String) -> String {
         switch classification {
-        case "audio_track_changed", "subtitle_track_changed":
+        case "audio_track_changed", "subtitle_track_changed", PlaybackReconnectPolicy.classification:
             return PlaybackProtocolV3.ReplanOperation.trackChange
         case "quality_changed":
             return PlaybackProtocolV3.ReplanOperation.qualityChange
@@ -1745,7 +1753,7 @@ actor PlaybackSessionBridge {
 
     /// Ends a replan at a dead end: retires `retiring` when it names a session
     /// other than the current one, reports the terminal route event, and
-    /// returns the non-retryable failure for the caller to throw.
+    /// returns `replanDeadEnd(reason:message:)` for the caller to throw.
     @discardableResult
     private func failReplan(
         active: ActiveProtocolV3,
@@ -1763,8 +1771,30 @@ actor PlaybackSessionBridge {
             reason: reason,
             message: message
         )
-        return PlaybackV3TerminalFailure(reason: reason, message: message, retryable: false)
+        return Self.replanDeadEnd(reason: reason, message: message)
     }
+
+    /// The failure for a replan dead end. An exhausted attempt ladder, a
+    /// replan loop or an unusable replacement plan belongs to this session's
+    /// recovery and stays retryable: Retry starts a fresh session with a
+    /// fresh ladder. A refusal the start path makes too
+    /// (`replanRefusalsThatFailAFreshStart`) is not, because a fresh session
+    /// would fail the same way.
+    nonisolated static func replanDeadEnd(reason: String, message: String) -> PlaybackV3TerminalFailure {
+        PlaybackV3TerminalFailure(
+            reason: reason,
+            message: message,
+            retryable: !replanRefusalsThatFailAFreshStart.contains(reason)
+        )
+    }
+
+    /// Replan dead ends that `stageProtocolV3Start` refuses with
+    /// `retryable: false` as well: a server that drops authenticated media
+    /// transport, and a Watch Party whose fixed media version is gone.
+    nonisolated static let replanRefusalsThatFailAFreshStart: Set<String> = [
+        "server_upgrade_required",
+        fixedSourceFailure().reason,
+    ]
 
     func reportProtocolV3FirstFrame(
         planId expectedPlanId: String,

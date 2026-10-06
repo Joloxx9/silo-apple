@@ -282,11 +282,11 @@ struct PlayerView: View {
                         if let identity = remoteIdentityNotice {
                             RemotePlaybackIdentityNotice(identity: identity)
                                 .transition(.opacity)
-                        } else if let notice = viewModel.activeNotice {
+                        } else if let notice = viewModel.presentedNotice {
                             PlayerNoticeOverlay(notice: notice)
                         }
                         #else
-                        if let notice = viewModel.activeNotice {
+                        if let notice = viewModel.presentedNotice {
                             PlayerNoticeOverlay(notice: notice)
                         }
                         #endif
@@ -297,11 +297,11 @@ struct PlayerView: View {
                     #if os(tvOS)
                     if let message = watchPartySyncMessage {
                         PlayerBufferingCapsule(message: message, delay: .milliseconds(500))
-                    } else if viewModel.isLoading || viewModel.isBuffering {
+                    } else if viewModel.isLoading || viewModel.isBuffering || viewModel.isReconnecting {
                         PlayerBufferingCapsule()
                     }
                     #else
-                    if viewModel.isLoading || viewModel.isBuffering {
+                    if viewModel.isLoading || viewModel.isBuffering || viewModel.isReconnecting {
                         PlayerBufferingCapsule()
                     }
                     #endif
@@ -747,11 +747,13 @@ struct PlayerView: View {
                 .padding(.horizontal)
 
             HStack(spacing: 16) {
-                Button("Retry") {
-                    viewModel.retry()
+                if viewModel.errorIsRetryable {
+                    Button(viewModel.retryButtonTitle) {
+                        viewModel.retry()
+                    }
+                    .siloPrimaryButton()
+                    .frame(minWidth: 140)
                 }
-                .siloPrimaryButton()
-                .frame(minWidth: 140)
 
                 Button("Go Back") { dismissPlayer() }
                     .siloPrimaryButton()
