@@ -74,18 +74,46 @@ struct BrowseView: View {
                     activeFilterChips
                 }
 
-                EmptyStateView(
-                    icon: "film",
-                    title: "No items found",
-                    subtitle: "Try adjusting your filters"
-                )
-                .frame(minHeight: 320)
-                .padding(.horizontal, SiloTheme.padding)
+                emptyState
+                    .frame(minHeight: 320)
+                    .padding(.horizontal, SiloTheme.padding)
             }
             .frame(maxWidth: .infinity)
         }
         .reportsPageChromeScroll()
         .environment(\.browseLibraryId, libraryId)
+    }
+
+    @ViewBuilder
+    private var emptyState: some View {
+        switch viewModel.emptyReason {
+        case .libraryEmpty:
+            EmptyStateView(
+                icon: emptyLibraryIcon,
+                title: "This library is empty",
+                subtitle: "There is nothing in this library yet."
+            )
+        case .noFilterMatches:
+            VStack(spacing: SiloTheme.padding) {
+                EmptyStateView(
+                    icon: "line.3.horizontal.decrease.circle",
+                    title: "No items match your current filters"
+                )
+                Button("Clear filters") {
+                    Task { await viewModel.clearFilters() }
+                }
+                .siloPrimaryButton()
+                .frame(width: 200)
+            }
+        }
+    }
+
+    private var emptyLibraryIcon: String {
+        switch viewModel.mediaType {
+        case .series: return "tv"
+        case .audiobook: return "book.closed"
+        case .movie, .mixed: return "film"
+        }
     }
 
     private var scrollContent: some View {

@@ -193,12 +193,13 @@ struct TVLibraryGridView: View {
                 } else if let error = viewModel.error, viewModel.items.isEmpty {
                     ErrorView(state: error, onRetry: { Task { await viewModel.loadInitial() } })
                 } else if viewModel.items.isEmpty {
-                    EmptyStateView(
-                        icon: emptyGridIcon,
-                        title: "No titles match",
-                        subtitle: "Try a different letter or filter."
-                    )
-                    .frame(maxWidth: .infinity, minHeight: 400)
+                    // A full-width focus section: the centered Clear filters
+                    // button sits outside the straight-down path from the
+                    // left-aligned Sort/Filter pills, so Down only finds it
+                    // by entering this section.
+                    emptyState
+                        .frame(maxWidth: .infinity, minHeight: 400)
+                        .focusSection()
                 } else {
                     TVCatalogGrid(
                         items: viewModel.items,
@@ -235,6 +236,50 @@ struct TVLibraryGridView: View {
     private func claimGridFocus() {
         guard !viewModel.items.isEmpty else { return }
         gridFocusRequest += 1
+    }
+
+    // MARK: - Empty state
+
+    /// An empty library has nothing to act on, so it stays inert; the
+    /// control row and letter rail keep the page focusable. Filters that
+    /// match nothing add one native Clear filters button, which Down from the
+    /// control row and Left from the letter rail both reach through the
+    /// focus engine.
+    @ViewBuilder
+    private var emptyState: some View {
+        switch viewModel.emptyReason {
+        case .libraryEmpty:
+            EmptyStateView(
+                icon: emptyGridIcon,
+                title: "This library is empty",
+                subtitle: "There is nothing in this library yet."
+            )
+        case .noFilterMatches:
+            VStack(spacing: 32) {
+                EmptyStateView(
+                    icon: "line.3.horizontal.decrease.circle",
+                    title: "No titles match your filters"
+                )
+                .fixedSize(horizontal: false, vertical: true)
+
+                Button(action: clearFilters) {
+                    HStack(spacing: 10) {
+                        Image(systemName: "xmark.circle")
+                        Text("Clear filters")
+                    }
+                    .font(.system(size: 24, weight: .medium))
+                }
+                .buttonStyle(TVBrowseControlPillStyle())
+            }
+        }
+    }
+
+    private func clearFilters() {
+        selectedPrefix = nil
+        // The reload removes this button, so hand focus to the control row's
+        // first pill instead of leaving the focus engine to guess.
+        controlFocusRequest += 1
+        Task { await viewModel.clearFilters() }
     }
 
     private var emptyGridIcon: String {
