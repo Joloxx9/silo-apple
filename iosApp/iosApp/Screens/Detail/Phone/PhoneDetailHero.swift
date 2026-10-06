@@ -285,6 +285,27 @@ private struct PhoneDetailParallaxArtwork: View {
     }
 }
 
+/// Chooses between `PhoneDetailHero`'s compact and expanded compositions.
+/// Shared with the floating top chrome, which times its backing strip to the
+/// hero it sits over.
+enum PhoneDetailHeroLayout {
+    static let expandedBreakpoint: CGFloat = 700
+
+    static func usesExpandedLayout(
+        availableWidth: CGFloat,
+        horizontalSizeClass: UserInterfaceSizeClass?,
+        verticalSizeClass: UserInterfaceSizeClass?
+    ) -> Bool {
+        if horizontalSizeClass == .compact, verticalSizeClass == .regular {
+            return false
+        }
+        if availableWidth > 0 {
+            return availableWidth >= expandedBreakpoint
+        }
+        return horizontalSizeClass == .regular
+    }
+}
+
 /// Artwork-led mobile detail header used inside the bottom-presented detail
 /// card. Compact widths use the approved portrait composition: sharp artwork,
 /// title art at its lower edge, then metadata and actions. Wide iPad panes use
@@ -321,8 +342,6 @@ struct PhoneDetailHero<Actions: View, BelowOverview: View>: View {
     @State private var showFullOverview = false
     @ObservedObject private var advisoryAgePreference = AdvisoryAgePreferenceStore.shared
 
-    private let expandedLayoutBreakpoint: CGFloat = 700
-
     var body: some View {
         Group {
             if usesExpandedLayout {
@@ -344,13 +363,11 @@ struct PhoneDetailHero<Actions: View, BelowOverview: View>: View {
     }
 
     private var usesExpandedLayout: Bool {
-        if horizontalSizeClass == .compact, verticalSizeClass == .regular {
-            return false
-        }
-        if availableWidth > 0 {
-            return availableWidth >= expandedLayoutBreakpoint
-        }
-        return horizontalSizeClass == .regular
+        PhoneDetailHeroLayout.usesExpandedLayout(
+            availableWidth: availableWidth,
+            horizontalSizeClass: horizontalSizeClass,
+            verticalSizeClass: verticalSizeClass
+        )
     }
 
     // MARK: - Compact iPhone layout
