@@ -51,6 +51,8 @@ enum CreditsAutoSkipPolicy {
     }
 }
 
+/// What the up-next screen offers: the series' next episode, or a shuffle's
+/// next pick, which may be a movie.
 struct PlayerNextUpEpisode: Identifiable, Hashable {
     let contentId: String
     let seriesId: String?
@@ -63,11 +65,14 @@ struct PlayerNextUpEpisode: Identifiable, Hashable {
     let stillUrl: String?
     let stillThumbhash: String?
     let airDate: String?
+    /// False for a shuffled movie, which has no season or episode line.
+    let isEpisode: Bool
 
     var id: String { contentId }
-    var episodeLabel: String { "S\(seasonNumber):E\(episodeNumber)" }
+    var episodeLabel: String? { isEpisode ? "S\(seasonNumber):E\(episodeNumber)" : nil }
 
     init(episode: EpisodeListItem, seriesId: String?, seriesTitle: String?) {
+        isEpisode = true
         contentId = episode.contentId
         self.seriesId = seriesId
         self.seriesTitle = seriesTitle
@@ -84,6 +89,24 @@ struct PlayerNextUpEpisode: Identifiable, Hashable {
         stillUrl = episode.stillUrl
         stillThumbhash = episode.stillThumbhash
         airDate = episode.airDate
+    }
+
+    init(shufflePick item: ShuffleItem) {
+        contentId = item.contentId
+        isEpisode = item.isEpisode
+        seriesId = item.isEpisode ? item.seriesId : nil
+        seriesTitle = item.isEpisode ? item.seriesTitle : nil
+        seasonNumber = item.seasonNumber ?? 0
+        episodeNumber = item.episodeNumber ?? 0
+        let trimmedTitle = item.title.trimmingCharacters(in: .whitespacesAndNewlines)
+        title = trimmedTitle.isEmpty && item.isEpisode ? "Episode \(episodeNumber)" : trimmedTitle
+        overview = item.overview
+        runtime = item.runtime
+        // An episode card's poster is its 16:9 still; a movie's poster is
+        // portrait, so it shows its backdrop instead.
+        stillUrl = (item.isEpisode ? item.posterUrl : nil) ?? item.backdropUrl
+        stillThumbhash = (item.isEpisode ? item.posterThumbhash : nil) ?? item.backdropThumbhash
+        airDate = item.releaseDate
     }
 }
 
@@ -354,6 +377,21 @@ class PlayerViewModel {
     var nextUpCountdownSeconds: Int?
     var nextUpCountdownTotalSeconds: Int = 10
     var nextUpScreenVideoEnded = false
+    /// Set while this playback belongs to a shuffle: the up-next screen
+    /// offers the server's pick instead of the series' next episode, and
+    /// every pick plays from its beginning.
+    private(set) var shuffleState: PlayerShuffleState?
+    /// Stop shuffling clears `shuffleState` before the player closes; the
+    /// close still returns to the page the shuffle started from.
+    private var stoppedShuffling = false
+    private(set) var isAdvancingShuffle = false
+    private(set) var isPickingAnotherShufflePick = false
+    /// A shuffle action that failed, shown on the up-next screen.
+    private(set) var shuffleActionError: String?
+    @ObservationIgnored
+    private var shuffleTask: Task<Void, Never>?
+    @ObservationIgnored
+    private var shuffleRefreshTask: Task<Void, Never>?
     private enum NextUpPresentationSource {
         case automatic
         case hud
@@ -848,6 +886,8 @@ class PlayerViewModel {
         /// before applying the profile-wide automatic quality preference.
         var prefersLastUsedVersion = false
         var allowAlternateVersions: Bool? = nil
+        /// A shuffle plays a multi-part item from its first part.
+        var startsAtFirstPart = false
 
         /// Rebuild a request for the same playback session while retaining the
         /// user's temporary quality choice. Recovery must not fall back to the
@@ -1005,6 +1045,13 @@ class PlayerViewModel {
             || !nextUpCarouselItems.isEmpty
             || isLoadingNextUpEpisode
             || isLoadingNextUpOnDeck
+    }
+
+    /// Play Now has been pressed and the next item is not on screen yet.
+    var isStartingNextUp: Bool { isNextUpTransitioning || isAdvancingShuffle }
+
+    var canPickAnotherShufflePick: Bool {
+        shuffleState?.canPickAnother == true && !isStartingNextUp
     }
 
     /// Re-applies subtitle styling when the user edits the system's
@@ -1461,6 +1508,10 @@ class PlayerViewModel {
         guard startedAetherLoadEpoch != epoch else { return }
         startedAetherLoadEpoch = epoch
         handleFileLoaded()
+        if let playing = lastLoadRequest?.contentId, shuffleState != nil {
+            shuffleState?.markPlayed(playing)
+            if !isNextUpTransitioning { publishShuffleNextUp() }
+        }
         if isNextUpTransitioning {
             isNextUpTransitioning = false
             showNextUpScreen = false
@@ -2327,6 +2378,13 @@ class PlayerViewModel {
         nextUpPromptDismissed = false
         cancelNextUpCountdown()
 
+        // A shuffle replaces the series order: the server picks what follows.
+        if shuffleState != nil {
+            publishShuffleNextUp()
+            refreshShufflePick()
+            return
+        }
+
         guard detail.type == "episode",
               let seriesId = detail.seriesId,
               let seasonNumber = detail.seasonNumber,
@@ -2615,6 +2673,7 @@ class PlayerViewModel {
 
     private func shouldShowNextUpBeforeEnd(at movieTime: Double) -> Bool {
         canShowNextUpScreen
+            && nextShufflePart == nil
             && PlayerNextUpCompletionPolicy.isInPromptWindow(
                 currentTime: movieTime,
                 duration: duration,
@@ -2637,6 +2696,8 @@ class PlayerViewModel {
         let wasShowingBeforeEnd = showNextUpScreen && !nextUpScreenVideoEnded
         if !wasAlreadyShowing {
             nextUpPresentationSource = source
+            // The announced pick may no longer play; the read replaces it.
+            if shuffleState != nil { refreshShufflePick() }
         }
         showNextUpScreen = true
         nextUpScreenVideoEnded = videoEnded
@@ -2650,6 +2711,7 @@ class PlayerViewModel {
            wasShowingBeforeEnd,
            settings.autoPlayNextEpisode,
            nextUpEpisode != nil,
+           !isPickingAnotherShufflePick,
            !nextUpAutoplayCancelled {
             playNextEpisodeNow()
             return
@@ -2660,7 +2722,8 @@ class PlayerViewModel {
     private func startNextUpCountdownIfNeeded() {
         cancelNextUpCountdown()
         guard showNextUpScreen,
-              !isNextUpTransitioning,
+              !isStartingNextUp,
+              !isPickingAnotherShufflePick,
               settings.autoPlayNextEpisode,
               nextUpEpisode != nil,
               !nextUpAutoplayCancelled else {
@@ -2689,8 +2752,11 @@ class PlayerViewModel {
     }
 
     private func updateNextUpCountdownForActivePlayback(at movieTime: Double) {
+        // A pending Pick Another replaces the pick this would start; its
+        // answer restarts the countdown.
         guard showNextUpScreen,
               !isNextUpTransitioning,
+              !isPickingAnotherShufflePick,
               !nextUpScreenVideoEnded,
               nextUpPresentationSource != .credits,
               settings.autoPlayNextEpisode,
@@ -2741,6 +2807,10 @@ class PlayerViewModel {
     @discardableResult
     func keepWatchingCurrentEpisode() -> Bool {
         guard !isWatchPartyPlayback else { return false }
+        // Staying on this item wins over a shuffle advance still in flight;
+        // its late answer must not switch playback. If the server already
+        // moved on, the next Play Now replays that pick.
+        if isAdvancingShuffle { cancelShuffleOperations() }
         // An autoplay load failure may restore the postroll after disposing
         // the old playback pipeline. There is no current episode to resume in
         // that state, so let the shell fall back to closing the player.
@@ -2785,6 +2855,10 @@ class PlayerViewModel {
 
     func playNextEpisodeNow() {
         guard !isWatchPartyPlayback else { return }
+        if shuffleState != nil {
+            playNextShufflePick()
+            return
+        }
         let contentId: String
         switch PlayerNextUpPlaybackAction.resolve(
             candidateId: nextUpEpisode?.contentId,
@@ -2841,6 +2915,9 @@ class PlayerViewModel {
 
     func playOnDeckItemNow(_ item: PlayerOnDeckItem) {
         guard !isWatchPartyPlayback else { return }
+        // Choosing another title leaves the shuffle; it is not stopped, so
+        // like an abandoned one the server cleans it up.
+        leaveShuffle()
         let request = LoadRequest(
             contentId: item.contentId,
             preferredFileId: nil,
@@ -2853,6 +2930,209 @@ class PlayerViewModel {
             request: request,
             progressPosition: completionProgressPositionForCurrentItem(),
             finalizeCurrentSession: true
+        )
+    }
+
+    // MARK: - Shuffle
+
+    /// Offers the shuffle's pick on the up-next screen. A different pick gets
+    /// a full countdown rather than what was left of the previous one.
+    private func publishShuffleNextUp() {
+        guard let shuffleState else { return }
+        let pick = shuffleState.upNext.map(PlayerNextUpEpisode.init(shufflePick:))
+        guard pick != nextUpEpisode else { return }
+        let pickChanged = pick?.contentId != nextUpEpisode?.contentId
+        nextUpEpisode = pick
+        if showNextUpScreen {
+            if pick == nil {
+                cancelNextUpCountdown()
+            } else if pickChanged {
+                startNextUpCountdownIfNeeded()
+            }
+        } else {
+            updateNextUpPresentation(for: currentTime)
+        }
+    }
+
+    /// Re-reads the shuffle. The server replaces a pick that can no longer
+    /// play; `409` means nothing can, which shows the finished state. Any
+    /// other failure keeps the last pick.
+    private func refreshShufflePick() {
+        guard let shuffleId = shuffleState?.id else { return }
+        shuffleRefreshTask?.cancel()
+        shuffleRefreshTask = Task { @MainActor [weak self] in
+            let result: Result<APIv2Shuffle, Error>
+            do {
+                result = .success(try await SiloAPI.shared.shuffle(id: shuffleId))
+            } catch {
+                result = .failure(error)
+            }
+            // An advance or Pick Another answer is newer than this read.
+            guard let self, !Task.isCancelled, !self.isDisposed,
+                  self.shuffleState?.id == shuffleId,
+                  !self.isAdvancingShuffle, !self.isPickingAnotherShufflePick else { return }
+            switch result {
+            case .success(let latest): self.shuffleState?.apply(latest)
+            case .failure(let error): self.shuffleState?.applyRefreshFailure(error)
+            }
+            self.publishShuffleNextUp()
+        }
+    }
+
+    /// Moves the shuffle past the item that played and plays the new current
+    /// item from its beginning. Advancing names the played item, so a repeat
+    /// press or a retry after a lost answer plays the same pick.
+    private func playNextShufflePick() {
+        guard let shuffleState, shuffleState.upNext != nil,
+              !isStartingNextUp else { return }
+        let shuffleId = shuffleState.id
+        let playedContentId = shuffleState.advanceFromContentId
+        cancelShuffleOperations()
+        cancelNextUpCountdown()
+        isAdvancingShuffle = true
+        shuffleActionError = nil
+        shuffleTask = Task { @MainActor [weak self] in
+            let result: Result<APIv2Shuffle, Error>
+            do {
+                result = .success(try await SiloAPI.shared.advanceShuffle(id: shuffleId, fromContentId: playedContentId))
+            } catch {
+                result = .failure(error)
+            }
+            guard let self, !Task.isCancelled, !self.isDisposed,
+                  self.shuffleState?.id == shuffleId else { return }
+            self.isAdvancingShuffle = false
+            switch result {
+            case .success(let advanced):
+                self.shuffleState?.apply(advanced)
+                self.loadShufflePick(advanced.current.contentId)
+            case .failure(let error):
+                // Stop the countdown from retrying on its own; Play Now
+                // stays available.
+                self.nextUpAutoplayCancelled = true
+                self.shuffleState?.applyRefreshFailure(error)
+                self.shuffleActionError = ShuffleError.classify(error) == .nothingToPlay
+                    ? nil
+                    : "Couldn't continue the shuffle."
+                self.publishShuffleNextUp()
+            }
+        }
+    }
+
+    private func loadShufflePick(_ contentId: String) {
+        var request = LoadRequest(
+            contentId: contentId,
+            preferredFileId: nil,
+            preferredAudioTrackIndex: nil,
+            preferredSubtitleTrackIndex: nil,
+            preferredSidecarSubtitleTrackId: nil,
+            // Every pick plays from the beginning, not from saved progress.
+            startFromBeginning: true
+        )
+        request.startsAtFirstPart = true
+        beginFreshLoad(
+            request: request,
+            progressPosition: completionProgressPositionForCurrentItem(),
+            finalizeCurrentSession: true,
+            origin: .autoplay
+        )
+    }
+
+    /// Pick Another: the server replaces the announced next item.
+    func pickAnotherShufflePick() {
+        guard let shuffleState, canPickAnotherShufflePick,
+              !isPickingAnotherShufflePick else { return }
+        let shuffleId = shuffleState.id
+        let nextContentId = shuffleState.shuffle.next.contentId
+        cancelShuffleOperations()
+        cancelNextUpCountdown()
+        isPickingAnotherShufflePick = true
+        shuffleActionError = nil
+        shuffleTask = Task { @MainActor [weak self] in
+            let result: Result<APIv2Shuffle, Error>
+            do {
+                result = .success(try await SiloAPI.shared.skipShuffleItem(id: shuffleId, nextContentId: nextContentId))
+            } catch {
+                result = .failure(error)
+            }
+            guard let self, !Task.isCancelled, !self.isDisposed,
+                  self.shuffleState?.id == shuffleId else { return }
+            self.isPickingAnotherShufflePick = false
+            switch result {
+            case .success(let skipped):
+                let previous = self.nextUpEpisode?.contentId
+                self.shuffleState?.apply(skipped)
+                self.publishShuffleNextUp()
+                // The server keeps the same pick when it is the only one
+                // left; the countdown still starts over.
+                if self.nextUpEpisode?.contentId == previous {
+                    self.startNextUpCountdownIfNeeded()
+                }
+            case .failure(let error):
+                self.shuffleState?.applyRefreshFailure(error)
+                self.shuffleActionError = ShuffleError.classify(error) == .nothingToPlay
+                    ? nil
+                    : "Couldn't pick another."
+                self.publishShuffleNextUp()
+                self.startNextUpCountdownIfNeeded()
+            }
+        }
+    }
+
+    /// Stop shuffling. The caller closes the player; the delete is not
+    /// awaited, and a failed one leaves a shuffle the server cleans up.
+    func stopShuffling() {
+        guard let shuffleId = shuffleState?.id else { return }
+        nextUpAutoplayCancelled = true
+        cancelNextUpCountdown()
+        leaveShuffle()
+        stoppedShuffling = true
+        Task { try? await SiloAPI.shared.deleteShuffle(id: shuffleId) }
+    }
+
+    private func leaveShuffle() {
+        guard shuffleState != nil else { return }
+        cancelShuffleOperations()
+        shuffleState = nil
+        shuffleActionError = nil
+    }
+
+    private func cancelShuffleOperations() {
+        shuffleTask?.cancel()
+        shuffleTask = nil
+        shuffleRefreshTask?.cancel()
+        shuffleRefreshTask = nil
+        isAdvancingShuffle = false
+        isPickingAnotherShufflePick = false
+    }
+
+    /// During a shuffle, the part of a multi-part item that plays after the
+    /// one on screen.
+    private var nextShufflePart: FileVersion? {
+        guard shuffleState != nil,
+              let current = currentSelectedVersion,
+              let versions = currentWatchDetail?.versions else { return nil }
+        return PlayerMultipartPolicy.nextPart(after: current, in: versions)
+    }
+
+    private func playShufflePart(_ part: FileVersion) {
+        guard let contentId = lastLoadRequest?.contentId else { return }
+        var request = LoadRequest(
+            contentId: contentId,
+            preferredFileId: part.fileId,
+            preferredAudioTrackIndex: nil,
+            preferredSubtitleTrackIndex: nil,
+            preferredSidecarSubtitleTrackId: nil,
+            startFromBeginning: true
+        )
+        request.libraryId = libraryId
+        // An automatic hand-off like the next pick: bounded by the autoplay
+        // timeout, and a failure returns to the up-next screen instead of a
+        // full-screen error.
+        beginFreshLoad(
+            request: request,
+            progressPosition: currentTime,
+            finalizeCurrentSession: true,
+            origin: .autoplay
         )
     }
 
@@ -2891,6 +3171,9 @@ class PlayerViewModel {
     /// The Series episode on screen as the player closes, so its Series page
     /// can land on it or on the episode after it. See `SeriesPlaybackReturn`.
     private func seriesPlaybackReturn(completed: Bool) -> SeriesPlaybackReturn? {
+        // A shuffle returns to the page it started from, not to the series of
+        // whichever episode played last.
+        guard shuffleState == nil, !stoppedShuffling else { return nil }
         if let detail = currentWatchDetail {
             guard let seriesId = detail.seriesId?.trimmingCharacters(in: .whitespacesAndNewlines),
                   !seriesId.isEmpty else { return nil }
@@ -3811,6 +4094,10 @@ class PlayerViewModel {
             )
         }
 
+        if !isPremature, let nextPart = nextShufflePart {
+            playShufflePart(nextPart)
+            return
+        }
         beginNextUpPostroll(videoEnded: true)
     }
 
@@ -4514,7 +4801,8 @@ class PlayerViewModel {
                 allowNearEndResume: allowNearEndResume,
                 prefersLastUsedVersion: request.prefersLastUsedVersion,
                 preferredQualityOverride: request.preferredQualityOverride,
-                allowAlternateVersions: request.allowAlternateVersions
+                allowAlternateVersions: request.allowAlternateVersions,
+                startsAtFirstPart: request.startsAtFirstPart
             )
         }
         guard let timeout else {
@@ -4582,6 +4870,15 @@ class PlayerViewModel {
             isLoadingNextUpEpisode = false
             showNextUpScreen = true
             nextUpScreenVideoEnded = true
+            // A shuffle keeps offering the pick that failed: Play Now
+            // retries it, since it never reached a first frame. A later part
+            // of an item that already played moves on to the next pick.
+            if let shuffleState {
+                shuffleActionError = lastLoadRequest?.contentId == shuffleState.advanceFromContentId
+                    ? "Couldn't play the next part."
+                    : "Couldn't start the next pick."
+                publishShuffleNextUp()
+            }
             showNotice(
                 title: "Couldn't start the next episode",
                 message: message,
@@ -4740,9 +5037,13 @@ class PlayerViewModel {
         startFromBeginning: Bool,
         resumePositionOverride: Double? = nil,
         prefersLastUsedVersion: Bool = false,
-        offlineDownloadId: String? = nil
+        offlineDownloadId: String? = nil,
+        shuffle: APIv2Shuffle? = nil
     ) {
         guard !isWatchPartyPlayback else { return }
+        if let shuffle {
+            shuffleState = PlayerShuffleState(shuffle: shuffle)
+        }
         var request = LoadRequest(
             contentId: contentId,
             preferredFileId: preferredFileId,
@@ -4754,6 +5055,7 @@ class PlayerViewModel {
         )
         request.libraryId = initialLibraryId
         request.prefersLastUsedVersion = prefersLastUsedVersion
+        request.startsAtFirstPart = shuffleState != nil
         beginFreshLoad(
             request: request,
             progressPosition: currentTime,
@@ -5504,8 +5806,11 @@ class PlayerViewModel {
     /// keep playing in its preview instead of stopping on a frozen frame.
     /// Returns false when the caller should finish the item at EOF instead.
     private func presentNextUpOverCredits() -> Bool {
+        // A shuffle plays every part of a multi-part item first: skipping
+        // credits finishes the part at EOF, which starts the next one.
         guard !isWatchPartyPlayback,
               canShowNextUpScreen,
+              nextShufflePart == nil,
               !hasReachedEndOfFile,
               !isNextUpTransitioning,
               let epoch = activeAetherLoadEpoch,
@@ -6639,6 +6944,8 @@ class PlayerViewModel {
         nextUpLookupTask?.cancel()
         nextUpOnDeckTask?.cancel()
         nextUpCountdownTask?.cancel()
+        shuffleTask?.cancel()
+        shuffleRefreshTask?.cancel()
         skipDebounceTask?.cancel()
         seekFilterTimeoutTask?.cancel()
         holdSeekTask?.cancel()

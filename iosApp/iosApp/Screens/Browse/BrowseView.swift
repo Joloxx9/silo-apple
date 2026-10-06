@@ -9,6 +9,7 @@ struct BrowseView: View {
 
     @State private var viewModel = BrowseViewModel()
     @State private var showFilters = false
+    @State private var shuffleLauncher = ShuffleLauncher()
     @Environment(AppRouter.self) private var router
 
     @ViewBuilder
@@ -159,9 +160,28 @@ struct BrowseView: View {
                 )
             }
             .buttonStyle(.plain)
+            if let shuffleLibraryId {
+                Button {
+                    shuffleLauncher.start(ShuffleScopeRequest(kind: .library, id: String(shuffleLibraryId)), router: router)
+                } label: {
+                    controlChip(icon: "shuffle", text: "Shuffle")
+                }
+                .buttonStyle(.plain)
+                .disabled(shuffleLauncher.isStarting)
+                .accessibilityIdentifier("library-shuffle")
+            }
             Spacer(minLength: 0)
         }
         .padding(.horizontal, SiloTheme.padding)
+        .shuffleFailureAlert(shuffleLauncher)
+    }
+
+    /// The library a Shuffle chip plays from; nil where Shuffle isn't offered.
+    private var shuffleLibraryId: Int? {
+        guard let libraryId,
+              ShuffleAvailability.isShuffleLibraryType(libraryType),
+              ShuffleFeatureStore.shared.supports(.library) else { return nil }
+        return libraryId
     }
 
     private var sortMenu: some View {

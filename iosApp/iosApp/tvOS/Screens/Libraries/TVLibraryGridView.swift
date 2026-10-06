@@ -39,6 +39,7 @@ struct TVLibraryGridView: View {
     @State private var controlFocusRequest = 0
     @State private var gridFocusRequest = 0
     @State private var lastShellFocusRequest = 0
+    @State private var shuffleLauncher = ShuffleLauncher()
 
     @Environment(AppRouter.self) private var router
 
@@ -73,6 +74,10 @@ struct TVLibraryGridView: View {
         modelSlot.value {
             TVLibraryGridViewModel(libraryId: libraryId, libraryType: libraryType, initialFilter: initialFilter)
         }
+    }
+
+    private var canShuffle: Bool {
+        ShuffleAvailability.isShuffleLibraryType(libraryType) && ShuffleFeatureStore.shared.supports(.library)
     }
 
     var body: some View {
@@ -160,9 +165,14 @@ struct TVLibraryGridView: View {
                     onMoveUp: onTopMenuFocusRequest,
                     onMoveDown: claimGridFocus,
                     onSort: { openPanel = .sort },
-                    onFilter: { openPanel = .filter }
+                    onFilter: { openPanel = .filter },
+                    onShuffle: canShuffle ? {
+                        shuffleLauncher.start(ShuffleScopeRequest(kind: .library, id: String(libraryId)), router: router)
+                    } : nil,
+                    isShuffleStarting: shuffleLauncher.isStarting
                 )
                 .padding(.horizontal, SiloTheme.safePadding)
+                .shuffleFailureAlert(shuffleLauncher)
 
                 if viewModel.items.isEmpty && viewModel.isLoading {
                     LazyVGrid(

@@ -783,7 +783,8 @@ actor PlaybackSessionBridge {
         allowNearEndResume: Bool = false,
         prefersLastUsedVersion: Bool = false,
         preferredQualityOverride: String? = nil,
-        allowAlternateVersions: Bool? = nil
+        allowAlternateVersions: Bool? = nil,
+        startsAtFirstPart: Bool = false
     ) async throws -> PreparedPlayback {
         logger.info("Fetching watch detail for \(contentId, privacy: .public)")
         let watchDetail = try await SiloAPI.shared.watchDetail(contentId: contentId, libraryId: libraryId)
@@ -829,7 +830,7 @@ actor PlaybackSessionBridge {
             return storedResumePosition
         }()
 
-        let selectedVersion: FileVersion
+        var selectedVersion: FileVersion
         if let preferredFileId,
            let requestedVersion = watchDetail.versions.first(where: { $0.fileId == preferredFileId }) {
             selectedVersion = requestedVersion
@@ -857,6 +858,13 @@ actor PlaybackSessionBridge {
                 lastFileId: watchDetail.userData?.lastFileId,
                 preferredQuality: preferredQuality
             )
+        }
+        // A multi-part item that must play through starts at its first part,
+        // whichever part the quality ranking happened to prefer.
+        if startsAtFirstPart,
+           preferredFileId == nil,
+           let firstPart = PlayerMultipartPolicy.firstPart(for: selectedVersion, in: watchDetail.versions) {
+            selectedVersion = firstPart
         }
         let resolvedAudioTrackIndex = preferredAudioTrackIndex
             ?? selectedVersion.effectiveAudioTrackIndex

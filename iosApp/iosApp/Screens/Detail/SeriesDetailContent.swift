@@ -61,6 +61,8 @@ struct SeriesDetailContent<BelowOverview: View>: View {
     @ViewBuilder let belowOverview: () -> BelowOverview
 
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    @Environment(AppRouter.self) private var router
+    @State private var shuffleLauncher = ShuffleLauncher()
     @State private var hierarchyRetryTask: Task<Void, Never>?
     @State private var pendingResumeEpisode: EpisodeListItem?
     @State private var isUpdatingWatched = false
@@ -145,6 +147,7 @@ struct SeriesDetailContent<BelowOverview: View>: View {
             Text("Please check your connection and try again.")
         }
         .personalStateNoticeAlert($watchedNotice)
+        .shuffleFailureAlert(shuffleLauncher)
     }
 
     private var heroToContentSpacing: CGFloat {
@@ -297,6 +300,25 @@ struct SeriesDetailContent<BelowOverview: View>: View {
     /// Menu contents for the action row's named "More" entry.
     @ViewBuilder
     private var overflowMenuItems: some View {
+        if canShuffleSeries {
+            Button {
+                shuffleLauncher.start(ShuffleScopeRequest(kind: .series, id: detail.seriesId ?? detail.contentId), router: router)
+            } label: {
+                Label("Shuffle Series", systemImage: "shuffle")
+            }
+            .disabled(shuffleLauncher.isStarting)
+        }
+        if let season = shuffleSeason {
+            Button {
+                shuffleLauncher.start(ShuffleScopeRequest(kind: .season, id: season.contentId), router: router)
+            } label: {
+                Label("Shuffle \(season.downloadDisplayName)", systemImage: "shuffle")
+            }
+            .disabled(shuffleLauncher.isStarting)
+        }
+        if canShuffleSeries || shuffleSeason != nil {
+            Divider()
+        }
         #if os(iOS)
         if let episode = nextUpEpisode {
             WatchPartyMenuButton(contentId: episode.contentId, title: episode.title ?? "Episode", type: "episode",
@@ -326,6 +348,21 @@ struct SeriesDetailContent<BelowOverview: View>: View {
             Label("Find Trailers", systemImage: "film")
         }
         .disabled(isFindingTrailers)
+    }
+
+    private var canShuffleSeries: Bool {
+        ShuffleFeatureStore.shared.supports(.series)
+            && ShuffleAvailability.hasEnoughToShuffle(playableCount: seasons.reduce(0) { $0 + $1.episodeCount })
+    }
+
+    /// The selected season, when it has at least two episodes with files.
+    private var shuffleSeason: Season? {
+        guard let selectedSeason, ShuffleFeatureStore.shared.supports(.season),
+              !isLoadingEpisodes else { return nil }
+        let playable = episodes.filter {
+            $0.seasonNumber == selectedSeason.seasonNumber && !($0.files ?? []).isEmpty
+        }
+        return ShuffleAvailability.hasEnoughToShuffle(playableCount: playable.count) ? selectedSeason : nil
     }
 
     private func handlePlayTap(for episode: EpisodeListItem) {
