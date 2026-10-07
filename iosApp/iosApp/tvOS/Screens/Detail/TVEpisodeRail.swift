@@ -696,6 +696,9 @@ struct TVEpisodeCard: View {
         )
 
         if let onSetRating {
+            // A second pick while a write is open would capture a stale
+            // `previous` in `apply`, so the rating menu takes the same
+            // in-flight guard the watched and favorite items use above.
             Menu {
                 ForEach((1...5).reversed(), id: \.self) { stars in
                     Button {
@@ -706,6 +709,7 @@ struct TVEpisodeCard: View {
                             systemImage: (rating ?? 0) >= stars ? "star.fill" : "star"
                         )
                     }
+                    .disabled(actionFeedback.isUpdating)
                 }
                 if rating != nil {
                     Button(role: .destructive) {
@@ -713,6 +717,7 @@ struct TVEpisodeCard: View {
                     } label: {
                         Label("Clear Rating", systemImage: "star.slash")
                     }
+                    .disabled(actionFeedback.isUpdating)
                 }
             } label: {
                 Label(
