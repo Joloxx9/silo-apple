@@ -11,7 +11,12 @@ import XCTest
 /// started with subtitles off.
 final class ExternalSubtitleIndexTests: XCTestCase {
     private func tracks(_ json: String) throws -> [SubtitleTrack] {
-        try JSONDecoder().decode([SubtitleTrack].self, from: Data(json.utf8))
+        // Decode the way HTTPClient does, so a fixture that spells a wire key
+        // in snake_case (external_path, hearing_impaired) exercises the same
+        // mapping production uses instead of silently arriving nil.
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        return try decoder.decode([SubtitleTrack].self, from: Data(json.utf8))
     }
 
     /// An embedded track and a sidecar that the server numbered as well.

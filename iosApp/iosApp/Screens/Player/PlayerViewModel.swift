@@ -4966,7 +4966,13 @@ class PlayerViewModel {
                        in: prepared.selectedVersion.subtitleTracks
                    ) {
                     self.pendingSubtitleFfIndex = nil
-                    self.hasExplicitSubtitleChoice = false
+                    // Dropping the ordinal does not undo the viewer's pick: a sidecar
+                    // chosen on the item card still has its synthesised trackId waiting
+                    // for the track-list callback. Clearing the flag outright sent that
+                    // pick through device defaults below, where forced-only mode
+                    // disables a non-forced sidecar and a different system language
+                    // selects another track. Keep yielding while an identity remains.
+                    self.hasExplicitSubtitleChoice = self.pendingSidecarSubtitleTrackId != nil
                     Self.logger.info("[CMP-SUB] ignoring external subtitle ordinal offered as an embedded index=\(bogusIndex, privacy: .public)")
                 }
                 if !self.hasExplicitSubtitleChoice {
