@@ -156,6 +156,11 @@ struct TVPlayerScrubber: View {
             .onChange(of: isTimelineScrubbing) { _, scrubbing in
                 if scrubbing {
                     hasTimelineSelectionMoved = false
+                } else {
+                    // The shell can end the session itself (AI subtitles
+                    // resuming playback); a held Left/Right must not keep
+                    // stepping a preview that is gone.
+                    stopTimelineAutoSeek()
                 }
             }
             .onMoveCommand(perform: handleMove)

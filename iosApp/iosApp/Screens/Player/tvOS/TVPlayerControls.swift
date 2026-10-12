@@ -207,6 +207,16 @@ struct TVPlayerControls: View {
         .onChange(of: viewModel.showControls) { _, _ in
             fullHUDContactCanToggle = false
         }
+        // Select during the AI subtitles "Preparing" pause lands on the
+        // scrubber and opens a scrub preview. When the AI job then resumes
+        // playback, drop that preview instead of leaving it on screen to seek
+        // back later.
+        .onChange(of: viewModel.isPlaying) { _, playing in
+            guard playing, isTimelineScrubbing, viewModel.subtitleAI.livePresentationActive else { return }
+            viewModel.cancelScrub()
+            isTimelineScrubbing = false
+            resumePlaybackAfterTimelineSelection = false
+        }
         // Re-arm the auto-hide whenever focus moves between transport controls,
         // so navigating the overlay doesn't let the fixed 5s timer hide it (and
         // the user's focus) out from under them mid-interaction.
