@@ -367,6 +367,15 @@ final class SubtitleAIController {
         errorMessage = nil
     }
 
+    /// Clear a failure the user has seen, so the menu offers languages again
+    /// instead of reopening on the same error. A held request keeps the
+    /// failure until the user discards it, because it may have started a job.
+    func acknowledgeFailure() {
+        guard phase == .failed, heldRequest == nil else { return }
+        phase = .idle
+        errorMessage = nil
+    }
+
     /// Drop the held request behind the current failure so the user can send
     /// it again. The earlier request may still have started a job.
     func discardHeldRequest() {

@@ -441,6 +441,24 @@ final class SubtitleAIControllerTests: XCTestCase {
         XCTAssertEqual(h.controller.phase, .idle)
     }
 
+    /// Dismissing a failure returns the controller to idle, so the menu
+    /// offers languages again instead of reopening on the old error.
+    func testAcknowledgedFailureReturnsToIdle() {
+        let h = makeHarness(downloaded: [])
+        let track = PlayerTrack(trackId: 9, kind: .sub, title: nil, lang: "en", codec: "subrip",
+                                audioChannelCount: nil, bitrate: nil, isDefault: false, isForced: false,
+                                isHearingImpaired: false, isExternal: false, isSelected: false,
+                                ffIndex: 3, srcId: nil)
+        h.controller.translateExisting(track: track, to: "de")
+        XCTAssertEqual(h.controller.phase, .failed)
+
+        h.controller.acknowledgeFailure()
+
+        XCTAssertEqual(h.controller.phase, .idle)
+        XCTAssertNil(h.controller.errorMessage)
+        XCTAssertFalse(h.controller.isBusy)
+    }
+
     // MARK: - (e) no `started` within the safety window
 
     /// A job with no `started` frame (poll-only, or queued on the server) must

@@ -103,11 +103,16 @@ struct SubtitleTranslateMenu: View {
     }
 
     var body: some View {
-        #if os(tvOS)
-        tvOSPanel
-        #else
-        phoneList
-        #endif
+        Group {
+            #if os(tvOS)
+            tvOSPanel
+            #else
+            phoneList
+            #endif
+        }
+        // Leaving the menu by any route (Dismiss, Done, swipe, Back/Menu)
+        // clears a failure the viewer has seen, so it reopens on languages.
+        .onDisappear { controller.acknowledgeFailure() }
     }
 
     // MARK: - Shared content
