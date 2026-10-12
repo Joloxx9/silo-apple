@@ -84,6 +84,9 @@ struct PreparedPlayback {
 enum PlaybackProgressReportResult: Equatable {
     case success
     case missingSession
+    /// The server ended the session for good (an administrator stopped it);
+    /// the player leaves instead of renewing.
+    case sessionEnded
     case transientFailure
 }
 
@@ -1969,6 +1972,12 @@ actor PlaybackSessionBridge {
             logger.warning(
                 "reportProgress failed for session \(sid, privacy: .public) (consecutive=\(self.consecutiveProgressFailures)): \(MediaLogRedactor.sanitize(error), privacy: .public)"
             )
+            if Self.isPlaybackSessionEnded(error) {
+                logger.notice(
+                    "playback session \(sid, privacy: .public) was ended by the server; leaving playback"
+                )
+                return .sessionEnded
+            }
             if Self.isPlaybackSessionMissing(error) {
                 emittedOrphanedSessionWarning = true
                 logger.error(
@@ -2102,6 +2111,15 @@ actor PlaybackSessionBridge {
     }
 
     // MARK: - Helpers
+
+    /// Whether the server ended the session for good: 410
+    /// `playback_session_ended`, which it answers once an administrator
+    /// stopped a player that could not be told directly. Starting a fresh
+    /// session would undo that stop, so the player leaves instead.
+    static func isPlaybackSessionEnded(_ error: Error) -> Bool {
+        guard case APIv2Error.problem(let problem) = error else { return false }
+        return problem.status == 410 && problem.identifier == "playback_session_ended"
+    }
 
     /// Whether a session mutation failed because the session cannot be
     /// continued: the server answers 404 for a stopped, expired or unknown

@@ -792,6 +792,9 @@ class PlayerViewModel {
     /// and the start request a new session uses when the old one is gone.
     @ObservationIgnored
     private var reconnectCycle = PlaybackReconnectCycle()
+    /// Set once the server said the session was ended for good, so progress,
+    /// replan and reconnect do not each start their own exit.
+    private var serverEndedSessionHandled = false
     @ObservationIgnored
     private var reconnectTimerTask: Task<Void, Never>?
     @ObservationIgnored
@@ -2556,6 +2559,10 @@ class PlayerViewModel {
                 Self.logger.error(
                     "Protocol V3 replan failed: \(MediaLogRedactor.sanitize(error), privacy: .public)"
                 )
+                if PlaybackSessionBridge.isPlaybackSessionEnded(error) {
+                    self.leaveServerEndedSession()
+                    return
+                }
                 if self.reconnectCycle.isActive {
                     // A replan sent while reconnecting got no plan back: the
                     // reconnect decides whether to wait or start over.
@@ -4562,6 +4569,9 @@ class PlayerViewModel {
         remoteDismissTask = nil
         activeNotice = nil
         remoteDismissToken = nil
+        // The exit a server-ended session started is cancelled above; the
+        // session this load starts handles its own end.
+        serverEndedSessionHandled = false
         hideControlsTask?.cancel()
         skipDebounceTask?.cancel()
         skipDebounceTask = nil
@@ -5627,6 +5637,10 @@ class PlayerViewModel {
     /// session, or give up.
     private func continueReconnect(after error: Error, step: PlaybackReconnectPolicy.Step) {
         guard !isDisposed, reconnectCycle.isActive else { return }
+        if PlaybackSessionBridge.isPlaybackSessionEnded(error) {
+            leaveServerEndedSession()
+            return
+        }
         isLoading = false
         Self.logger.warning(
             "Playback reconnect attempt failed step=\(String(describing: step), privacy: .public): \(MediaLogRedactor.sanitize(error), privacy: .public)"
@@ -8081,6 +8095,23 @@ class PlayerViewModel {
         }
     }
 
+    /// The server ended this session for good: an administrator stopped it
+    /// while the player could not be told over the control socket. Leave the
+    /// way an administrator stop does, instead of renewing into a new session.
+    private func leaveServerEndedSession() {
+        guard !isDisposed, !serverEndedSessionHandled else { return }
+        serverEndedSessionHandled = true
+        cancelReconnect()
+        aetherPlaybackController.pause()
+        showNotice(
+            title: "Playback stopped by admin",
+            message: "An administrator ended this playback session.",
+            tone: .warning,
+            duration: 1.2
+        )
+        requestRemoteDismiss(after: 0.8)
+    }
+
     private func requestRemoteDismiss(after delay: TimeInterval = 0) {
         noticeDismissTask?.cancel()
         remoteDismissTask?.cancel()
@@ -8949,6 +8980,15 @@ class PlayerViewModel {
                     position: self.currentTime,
                     isPaused: !self.isPlaying
                 )
+                if result == .sessionEnded {
+                    // A new load or renewal cancels this loop when it moves
+                    // to another session. A late answer about the old one
+                    // must not end the playback that replaced it.
+                    if !Task.isCancelled {
+                        self.leaveServerEndedSession()
+                    }
+                    return
+                }
                 if result == .missingSession {
                     _ = self.attemptStaleSessionRenewal(
                         reason: "progress",
