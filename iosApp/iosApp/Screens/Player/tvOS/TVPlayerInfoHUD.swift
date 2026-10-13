@@ -696,13 +696,12 @@ private struct InfoPane: View {
         var rows: [(String, String)] = [("Route", viewModel.playbackRouteDisplay)]
         if let audio = viewModel.audioTracks.first(where: { $0.trackId == viewModel.selectedAudioId }) {
             var bits: [String] = []
-            if let codec = audio.codec, !codec.isEmpty { bits.append(codec.uppercased()) }
+            if let codec = TrackLabels.audioCodec(audio.codec) { bits.append(codec) }
             if let channels = audio.channelCountLabel { bits.append(channels) }
             if !bits.isEmpty { rows.append(("Audio", bits.joined(separator: " · "))) }
         }
         if let sub = viewModel.subtitleTracks.first(where: { $0.trackId == viewModel.selectedSubtitleId }) {
-            let name = sub.title ?? sub.lang ?? "On"
-            rows.append(("Subtitles", name))
+            rows.append(("Subtitles", sub.singleLineLabel))
         } else {
             rows.append(("Subtitles", "Off"))
         }
@@ -1574,7 +1573,7 @@ private struct AudioPane: View {
     }
 
     private var selectedCodec: String? {
-        selectedTrack?.codec?.uppercased()
+        TrackLabels.audioCodec(selectedTrack?.codec)
     }
 }
 
@@ -1754,7 +1753,7 @@ private struct SubtitlesPane: View {
                 .focused($entryTrackFocused)
                 ForEach(viewModel.orderedSubtitleTracks) { track in
                     HUDTrackRow(
-                        name: track.languageFirstPrimaryLabel,
+                        name: track.primaryLabel,
                         attributes: attributes(for: track),
                         isSelected: viewModel.selectedSubtitleId == track.trackId
                     ) {
@@ -1781,8 +1780,8 @@ private struct SubtitlesPane: View {
                     }
                     ForEach(viewModel.availableSecondarySubtitleTracks) { track in
                         HUDTrackRow(
-                            name: track.languageFirstPrimaryLabel,
-                            attributes: track.languageFirstAttributesLabel,
+                            name: track.primaryLabel,
+                            attributes: track.attributesLabel,
                             isSelected: viewModel.selectedSecondarySubtitleId == track.trackId,
                             isDisabled: track.trackId == viewModel.selectedSubtitleId
                         ) {
@@ -1797,7 +1796,7 @@ private struct SubtitlesPane: View {
     /// The track's attributes, followed by its sync status when it can be
     /// synced ("Syncing… 40%", "Synced −3.0 s").
     private func attributes(for track: PlayerTrack) -> String? {
-        let parts = [track.languageFirstAttributesLabel, viewModel.subtitleSyncStatus(for: track)].compactMap { $0 }.filter { !$0.isEmpty }
+        let parts = [track.attributesLabel, viewModel.subtitleSyncStatus(for: track)].compactMap { $0 }.filter { !$0.isEmpty }
         return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
 
@@ -2183,8 +2182,15 @@ private struct HUDTrackRow: View {
         .buttonStyle(HUDRowButtonStyle(cornerRadius: 8))
         .disabled(isDisabled)
         .opacity(isDisabled ? 0.35 : 1.0)
-        .accessibilityLabel(name)
+        .accessibilityLabel(accessibilityName)
         .accessibilityValue(isSelected ? "Selected" : "")
+    }
+
+    /// Rows lead with the language, so the name alone reads "English" for
+    /// every English track; VoiceOver hears the detail line too.
+    private var accessibilityName: String {
+        guard let attributes else { return name }
+        return "\(name), \(attributes.replacingOccurrences(of: " · ", with: ", "))"
     }
 }
 

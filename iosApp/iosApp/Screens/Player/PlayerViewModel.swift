@@ -1610,7 +1610,7 @@ class PlayerViewModel {
     private func projectPlaybackStats() -> PlaybackStats {
         guard let spec = aetherPlaybackController.activeSpec else { return .empty }
         let secondaryLabel = selectedSecondarySubtitleId.flatMap { selectedID in
-            subtitleTracks.first { $0.trackId == selectedID }?.primaryLabel
+            subtitleTracks.first { $0.trackId == selectedID }?.singleLineLabel
         }
         let playbackPlan = activePreparedProtocolV3?.plan
         let source = AetherPlaybackStatsSourceMetadata(
@@ -9323,8 +9323,8 @@ extension PlayerViewModel {
             isBuffering: isBuffering,
             currentTime: currentTime,
             duration: duration,
-            audioTracks: audioTracks.map(makeSiloControlTrack),
-            subtitleTracks: subtitleTracks.map(makeSiloControlTrack),
+            audioTracks: makeSiloControlTracks(audioTracks),
+            subtitleTracks: makeSiloControlTracks(subtitleTracks),
             selectedAudioTrackId: selectedAudioId,
             selectedSubtitleTrackId: selectedSubtitleId,
             qualityOptions: hasQualityChoice ? qualityOptions.map(makeSiloControlOption) : [],
@@ -9346,24 +9346,18 @@ extension PlayerViewModel {
         )
     }
 
-    private func makeSiloControlTrack(_ track: PlayerTrack) -> SiloControlTrack {
-        // Subtitle titles are often the release name, which made every row on
-        // the phone remote identical. Lead with the language, and keep what
-        // separates same-language tracks in the title: remotes show only that.
-        if track.kind == .sub {
-            return SiloControlTrack(
+    private func makeSiloControlTracks(_ tracks: [PlayerTrack]) -> [SiloControlTrack] {
+        // Rows lead with the language, so the title also carries what tells
+        // same-language tracks apart ("English (Commentary)"): remotes show
+        // only the title.
+        zip(tracks, PlayerTrack.singleLineLabels(tracks)).map { track, title in
+            SiloControlTrack(
                 kind: track.kind.rawValue,
                 trackId: track.trackId,
-                title: track.languageFirstSingleLineLabel,
-                detail: track.languageFirstAttributesLabel
+                title: title,
+                detail: track.attributesLabel
             )
         }
-        return SiloControlTrack(
-            kind: track.kind.rawValue,
-            trackId: track.trackId,
-            title: track.primaryLabel,
-            detail: track.attributesLabel
-        )
     }
 
     private func makeSiloControlOption(_ option: ApplePlaybackQualityOption) -> SiloControlOption {
