@@ -171,6 +171,10 @@ final class ServerRegistry {
     private let tokenStore: TokenStore
     private let httpClient: HTTPClient
     private let persistenceOverride: (([ServerEntry], String?) -> Bool)?
+    /// Turns the server's push registration off (`ApplePushRegistrationCoordinator.unregister`).
+    private let unregisterPush: @Sendable (String) async -> Void
+    /// Turns it back on after a removal that did not happen (`ApplePushRegistrationCoordinator.restore`).
+    private let restorePush: @Sendable (String) async -> Void
 
     init(
         defaults: SharedDefaults = .shared,
@@ -178,7 +182,17 @@ final class ServerRegistry {
         launchPreferences: ProfileLaunchPreferences = .shared,
         persistenceOverride: (([ServerEntry], String?) -> Bool)? = nil,
         tokenStore: TokenStore = .shared,
-        httpClient: HTTPClient = .shared
+        httpClient: HTTPClient = .shared,
+        unregisterPush: @escaping @Sendable (String) async -> Void = { serverID in
+            #if os(iOS)
+            await ApplePushRegistrationCoordinator.shared.unregister(serverID: serverID)
+            #endif
+        },
+        restorePush: @escaping @Sendable (String) async -> Void = { serverID in
+            #if os(iOS)
+            await ApplePushRegistrationCoordinator.shared.restore(serverID: serverID)
+            #endif
+        }
     ) {
         self.defaults = defaults
         self.keychain = keychain
@@ -186,6 +200,8 @@ final class ServerRegistry {
         self.persistenceOverride = persistenceOverride
         self.tokenStore = tokenStore
         self.httpClient = httpClient
+        self.unregisterPush = unregisterPush
+        self.restorePush = restorePush
         Self.adoptLegacyDefaultsKeys(defaults)
         load()
         migrateLegacyIfNeeded()
@@ -501,6 +517,22 @@ final class ServerRegistry {
         serverId: String,
         resolveFallbackProfile: Bool = false
     ) async -> Bool {
+        // Only a device that can still authenticate can tell the server to
+        // stop pushing, so this runs before the credentials are deleted. A
+        // removal that then fails leaves the server saved and signed in, so
+        // its pushes are turned back on.
+        let turnsPushOff = entries.contains(where: { $0.id == serverId })
+        if turnsPushOff {
+            await unregisterPush(serverId)
+        }
+        let removed = await removeEntry(serverId: serverId, resolveFallbackProfile: resolveFallbackProfile)
+        if turnsPushOff, !removed {
+            await restorePush(serverId)
+        }
+        return removed
+    }
+
+    private func removeEntry(serverId: String, resolveFallbackProfile: Bool) async -> Bool {
         guard let transitionLease = await httpClient.beginIdentityTransition() else {
             recordRegistryEvent(
                 phase: "removeServer",

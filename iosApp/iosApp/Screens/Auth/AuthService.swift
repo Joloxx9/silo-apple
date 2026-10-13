@@ -20,6 +20,10 @@ final class AuthService: @unchecked Sendable {
     private let tokenStore: TokenStore
     private let sessionPersistence: AccountSessionPersistence
     private let purgeDiagnostics: @Sendable (String) async -> Bool
+    /// Turns the server's push registration off (`ApplePushRegistrationCoordinator.unregister`).
+    private let unregisterPush: @Sendable (String) async -> Void
+    /// Turns it back on after a sign-out that did not happen (`ApplePushRegistrationCoordinator.restore`).
+    private let restorePush: @Sendable (String) async -> Void
 
     enum SignOutAuthorization: Equatable, Sendable {
         case allowed(account: RefreshAccountIdentity?)
@@ -58,6 +62,16 @@ final class AuthService: @unchecked Sendable {
             #else
             return true
             #endif
+        },
+        unregisterPush: @escaping @Sendable (String) async -> Void = { serverID in
+            #if os(iOS)
+            await ApplePushRegistrationCoordinator.shared.unregister(serverID: serverID)
+            #endif
+        },
+        restorePush: @escaping @Sendable (String) async -> Void = { serverID in
+            #if os(iOS)
+            await ApplePushRegistrationCoordinator.shared.restore(serverID: serverID)
+            #endif
         }
     ) {
         self.serverIdentityResolver = serverIdentityResolver
@@ -71,6 +85,8 @@ final class AuthService: @unchecked Sendable {
         self.defaults = defaults
         self.sessionPersistence = sessionPersistence
         self.purgeDiagnostics = purgeDiagnostics
+        self.unregisterPush = unregisterPush
+        self.restorePush = restorePush
     }
 
     /// Runs the v2 contract probe for `serverId` and records the verdict.
@@ -832,12 +848,21 @@ final class AuthService: @unchecked Sendable {
         guard case .allowed(let account) = Self.signOutAuthorization(
             activeServerId: serverID, capturedAuth: capturedAuth
         ) else { return .refused }
-        guard let lease = await httpClient.beginIdentityTransition() else { return .refused }
+        // Only a device that can still authenticate can tell the server to
+        // stop pushing, so this runs before the credentials are cleared. A
+        // refused sign-out keeps the server signed in, so its pushes are
+        // turned back on.
+        if let serverID { await unregisterPush(serverID) }
+        guard let lease = await httpClient.beginIdentityTransition() else {
+            if let serverID { await restorePush(serverID) }
+            return .refused
+        }
         await httpClient.cancelInFlightRequests()
         guard !Task.isCancelled,
               serverRegistry.activeServerId == serverID,
               await tokenStore.refreshAccountIdentity() == account else {
             await httpClient.endIdentityTransition(lease)
+            if let serverID { await restorePush(serverID) }
             return .refused
         }
         #if os(iOS) || os(tvOS)
