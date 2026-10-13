@@ -359,7 +359,9 @@ private struct ItemDetailPhoneContent: View {
     @State private var isPageVisible = false
     /// Set when this page starts playback, so it only acts on its own return.
     @State private var awaitsPlaybackReturn = false
-    @State private var refreshOnPlayerDismiss = false
+    /// `PlayerCleanupBarrier` generation of the player this page presented,
+    /// so the reload after it closes waits for that player's final write.
+    @State private var playerCleanupGeneration: Int?
     @State private var offlinePlayChoice: OfflinePlayChoice?
     @State private var unreachablePlayRequest: UnreachablePlayRequest?
     @State private var detailScrollState = PhoneDetailScrollState()
@@ -416,17 +418,30 @@ private struct ItemDetailPhoneContent: View {
                 if let playback = takePlaybackReturn() {
                     await applySeriesPlaybackReturn(playback)
                 }
-                viewModel.initialResumeSeasonNumber = viewModel.selectedSeason?.seasonNumber
-                    ?? viewModel.initialResumeSeasonNumber
             } else {
                 selectedSeriesEpisodeId = resumeContext?.episodeContentId
                 viewModel.initialResumeSeasonNumber = resumeContext?.seasonNumber
             }
-            refreshOnPlayerDismiss = false
             detailScrollState.reset()
             // Seed from the painted detail so the selector doesn't show
             // "Auto" while the page reloads, then again from the fresh one.
             seedSubtitleOverrideIfNeeded()
+            if let cleanupGeneration = playerCleanupGeneration {
+                // Reloading before the closed player's last progress write
+                // lands would show the progress and watched state from before it.
+                await PlayerCleanupBarrier.waitForCleanup(of: cleanupGeneration)
+                // Hidden again before the write landed; the next return waits.
+                guard !Task.isCancelled else { return }
+                if playerCleanupGeneration == cleanupGeneration {
+                    playerCleanupGeneration = nil
+                }
+            }
+            if isReturning {
+                // Read after the wait, so a Series return that arrived during
+                // it keeps the season it chose.
+                viewModel.initialResumeSeasonNumber = viewModel.selectedSeason?.seasonNumber
+                    ?? viewModel.initialResumeSeasonNumber
+            }
             await viewModel.loadDetail(contentId: contentId)
             reseedSubtitleOverride()
         }
@@ -454,9 +469,11 @@ private struct ItemDetailPhoneContent: View {
             // A full-screen player hides this page, and the `.task` above
             // reloads it when it reappears. Reload here only when the page
             // stayed on screen under the player.
-            guard oldValue != nil, newValue == nil, refreshOnPlayerDismiss, isPageVisible else { return }
-            refreshOnPlayerDismiss = false
+            guard oldValue != nil, newValue == nil, let cleanupGeneration = playerCleanupGeneration,
+                  isPageVisible else { return }
+            playerCleanupGeneration = nil
             Task {
+                await PlayerCleanupBarrier.waitForCleanup(of: cleanupGeneration)
                 viewModel.initialResumeSeasonNumber = viewModel.selectedSeason?.seasonNumber
                     ?? viewModel.initialResumeSeasonNumber
                 await viewModel.loadDetail(contentId: contentId)
@@ -482,7 +499,7 @@ private struct ItemDetailPhoneContent: View {
             presenting: offlinePlayChoice
         ) { choice in
             Button(choice.downloadedLabel) {
-                refreshOnPlayerDismiss = true
+                playerCleanupGeneration = PlayerCleanupBarrier.beginPlayback()
                 router.presentOfflinePlayer(
                     downloadId: choice.downloadId,
                     contentId: choice.leafContentId,
@@ -1217,7 +1234,7 @@ private struct ItemDetailPhoneContent: View {
             // Server unreachable: streaming can't start, so skip the source
             // choice and play the local copy directly.
             guard ConnectionMonitor.shared.isServerReachable else {
-                refreshOnPlayerDismiss = true
+                playerCleanupGeneration = PlayerCleanupBarrier.beginPlayback()
                 router.presentOfflinePlayer(
                     downloadId: record.id,
                     contentId: record.leafMediaItemId,
@@ -1272,7 +1289,7 @@ private struct ItemDetailPhoneContent: View {
         startFromBeginning: Bool,
         resumePosition: Double?
     ) {
-        refreshOnPlayerDismiss = true
+        playerCleanupGeneration = PlayerCleanupBarrier.beginPlayback()
         // Pass the artwork URLs we already loaded into the detail view so
         // PlayerViewModel.pushNowPlayingArtwork can publish lock-screen art
         // without re-fetching the catalog item. The hints are best-effort —
