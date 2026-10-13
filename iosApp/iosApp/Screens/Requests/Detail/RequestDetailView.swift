@@ -11,7 +11,8 @@ import SwiftUI
 /// tvOS focus safety: the primary action is a single `Button` whose label
 /// and enabled state vary by `RequestPrimaryAction`. It is never swapped
 /// for a different view identity mid-morph, so focus stays put across
-/// request → submitting → pending.
+/// request → submitting → pending. Its label keeps the same accessibility
+/// shape across states too (see `primaryLabel`).
 struct RequestDetailView: View {
     @State private var viewModel: RequestDetailViewModel
     @Environment(AppRouter.self) private var router
@@ -410,7 +411,15 @@ struct RequestDetailView: View {
     private func primaryLabel(for action: RequestPrimaryAction) -> some View {
         #if os(tvOS)
         HStack(spacing: 14) {
+            // Decorative (the button carries its own accessibility label),
+            // and hidden so the morph doesn't change the button's
+            // accessibility children. Swapping the plus for the spinner and
+            // then the status dot while the button is focused otherwise
+            // detaches it from the focus engine: the pill still draws as
+            // focused, but VoiceOver and UI tests see nothing focused until
+            // the page is reopened.
             buttonIcon(for: action)
+                .accessibilityHidden(true)
             Text(buttonTitle(for: action))
                 .lineLimit(1)
         }
