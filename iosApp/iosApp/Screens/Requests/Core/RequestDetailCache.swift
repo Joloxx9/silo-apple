@@ -96,6 +96,14 @@ final class RequestDetailCache {
         }
     }
 
+    /// A follow toggle: the next first frame of the title, from the cached
+    /// detail or a card's seed, shows the new state.
+    func applyTitleState(_ update: RequestTitleStateUpdate) {
+        let key = Key(mediaType: update.mediaType, tmdbId: update.tmdbId)
+        details[key]?.request = update.request
+        seeds[key]?.request = update.request
+    }
+
     func seed(_ result: RequestMediaResult) {
         seeds[Key(mediaType: result.mediaType, tmdbId: result.tmdbId)] = result
     }

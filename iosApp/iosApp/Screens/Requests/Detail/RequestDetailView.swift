@@ -49,6 +49,7 @@ struct RequestDetailView: View {
         .animation(.smooth(duration: 0.3), value: viewModel.hasFreshDetail)
         .animation(.smooth(duration: 0.3), value: viewModel.progress)
         .sensoryFeedback(.success, trigger: viewModel.submittedCount)
+        .sensoryFeedback(.success, trigger: viewModel.followToggledCount)
         .sensoryFeedback(trigger: viewModel.actionErrorMessage) { _, message in
             guard let message else { return nil }
             // An unconfirmed create or cancel may still have landed, so it
@@ -60,6 +61,11 @@ struct RequestDetailView: View {
         .onChange(of: RequestsEventBus.shared.lastUpdate) { _, update in
             if let update {
                 viewModel.applyRequestUpdate(update)
+            }
+        }
+        .onChange(of: RequestsEventBus.shared.lastTitleState) { _, update in
+            if let update {
+                viewModel.applyTitleStateUpdate(update)
             }
         }
         #if os(iOS)
@@ -189,6 +195,10 @@ struct RequestDetailView: View {
                 RequestStatusCard(progress: progress, record: viewModel.displayedRecord)
             }
 
+            if viewModel.canFollow {
+                phoneFollowButton
+            }
+
             if viewModel.canCancel {
                 Button(role: .destructive) {
                     Task { await viewModel.cancel() }
@@ -202,7 +212,41 @@ struct RequestDetailView: View {
             }
         }
     }
+    /// Someone else's request: hear when it lands instead of requesting it
+    /// again. One button whose label flips, never two.
+    private var phoneFollowButton: some View {
+        VStack(spacing: 8) {
+            Button {
+                Task { await viewModel.toggleFollow() }
+            } label: {
+                Label(followTitle, systemImage: followIcon)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(Color.siloOnSurface)
+                    .frame(maxWidth: .infinity, minHeight: 44)
+                    .background(Capsule().fill(Color.siloChromeSelectedFill))
+                    .contentShape(Capsule())
+            }
+            .buttonStyle(.plain)
+            .disabled(viewModel.isTogglingFollow)
+            .accessibilityValue(viewModel.isFollowing ? "On" : "Off")
+
+            if let notice = viewModel.followNotice {
+                Text(notice)
+                    .font(.siloCaption)
+                    .foregroundColor(.siloSecondaryText)
+                    .frame(maxWidth: .infinity, alignment: .center)
+            }
+        }
+    }
     #endif
+
+    private var followTitle: String {
+        viewModel.isFollowing ? "Stop Notifying Me" : "Notify Me"
+    }
+
+    private var followIcon: String {
+        viewModel.isFollowing ? "bell.slash" : "bell"
+    }
 
     // MARK: - tvOS
 
@@ -252,19 +296,34 @@ struct RequestDetailView: View {
             primaryActionButton
                 .focused($primaryFocused)
 
+            // Stays enabled while a toggle runs: a disabled button leaves
+            // the focus graph and would drop focus. Only its label flips.
+            if viewModel.canFollow {
+                TVSecondaryPillButton(icon: followIcon, title: followTitle) {
+                    Task { await viewModel.toggleFollow() }
+                }
+            }
+
             if viewModel.canCancel {
                 TVSecondaryPillButton(icon: "xmark", title: "Cancel Request") {
                     Task { await viewModel.cancel() }
                 }
             }
 
-            if let message = viewModel.actionErrorMessage {
+            if let message = tvActionMessage {
                 Text(message)
                     .font(.siloCaption)
                     .foregroundColor(.siloSecondaryText)
             }
         }
         .focusSection()
+    }
+
+    private var tvActionMessage: String? {
+        if let error = viewModel.actionErrorMessage { return error }
+        // The follow notice belongs to the button: once the title lands or
+        // following goes away, it goes too.
+        return viewModel.canFollow ? viewModel.followNotice : nil
     }
 
     /// The labeled summary under the synopsis, in the playback summary's

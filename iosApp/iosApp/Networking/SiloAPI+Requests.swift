@@ -46,4 +46,13 @@ extension SiloAPI {
     func cancelRequest(id: String, reason: String? = nil) async throws -> MediaRequest {
         try await apiV2Client.cancelRequest(id: id, reason: reason)
     }
+
+    /// Notify the viewer when a title someone else requested lands.
+    func followRequestMedia(mediaType: RequestMediaType, tmdbId: Int) async throws -> RequestState {
+        try await apiV2Client.followRequestMedia(mediaType: mediaType, tmdbId: tmdbId)
+    }
+
+    func unfollowRequestMedia(mediaType: RequestMediaType, tmdbId: Int) async throws {
+        try await apiV2Client.unfollowRequestMedia(mediaType: mediaType, tmdbId: tmdbId)
+    }
 }

@@ -4,6 +4,9 @@ import Foundation
 /// it needs a selected profile, sends `X-Profile-Id` (and the profile proof
 /// when one is held), and runs under the owner captured at the start.
 ///
+/// Follow and unfollow are naturally idempotent: repeating one leaves the
+/// same state, so a lost answer is safe to send again.
+///
 /// Create and cancel are `non_retryable` in the contract. Neither is replayed
 /// after an uncertain outcome; the callers re-read server state instead. An
 /// owner change once a mutation has captured its owner is uncertain too: the
@@ -66,6 +69,23 @@ extension APIv2Client {
         return try await requestsCall("POST", path: path, body: try Self.encode(CancelRequestBody(reason: reason)), status: 200)
     }
 
+    // MARK: followRequestMedia / unfollowRequestMedia (naturally idempotent)
+
+    /// `PUT /api/v2/requests/follows/{media_type}/{tmdb_id}`: hear when a
+    /// title someone else requested becomes available. Answers the title's
+    /// request state for the viewer.
+    func followRequestMedia(mediaType: RequestMediaType, tmdbId: Int) async throws -> RequestState {
+        let type = try Self.requestableMediaType(mediaType)
+        return try await requestsCall("PUT", path: "/api/v2/requests/follows/\(type)/\(tmdbId)", status: 200)
+    }
+
+    /// `DELETE /api/v2/requests/follows/{media_type}/{tmdb_id}`. Answers 204
+    /// with no body.
+    func unfollowRequestMedia(mediaType: RequestMediaType, tmdbId: Int) async throws {
+        let type = try Self.requestableMediaType(mediaType)
+        _ = try await requestsSend("DELETE", path: "/api/v2/requests/follows/\(type)/\(tmdbId)", status: 204)
+    }
+
     /// Follows `page.next_cursor` under one owner captured at the start. A
     /// failed page, a missing or repeated cursor, or the page bound fails the
     /// whole load instead of returning a partial list.
@@ -103,6 +123,14 @@ extension APIv2Client {
 
     private func requestsCall<T: Decodable>(_ method: String, path: String, query: [String: String] = [:],
                                             body: Data? = nil, status: Int) async throws -> T {
+        let response = try await requestsSend(method, path: path, query: query, body: body, status: status)
+        return try HTTPClient.makeJSONDecoder(artworkServerURL: response.url).decode(T.self, from: response.data)
+    }
+
+    /// Sends one profile-scoped call and requires `status`; the caller reads
+    /// the body, if there is one.
+    private func requestsSend(_ method: String, path: String, query: [String: String] = [:],
+                              body: Data? = nil, status: Int) async throws -> HTTPRawResponse {
         try await gate()
         guard let auth = await tokenStore.captureOrdinaryRequestAuth(), let profile = auth.profileId else {
             throw HTTPError.requestIdentityChanged
@@ -124,7 +152,7 @@ extension APIv2Client {
             throw APIv2RequestsError.outcomeUnknownOwnerChanged
         }
         guard response.statusCode == status else { throw APIv2Error.httpStatus(response.statusCode) }
-        return try HTTPClient.makeJSONDecoder(artworkServerURL: response.url).decode(T.self, from: response.data)
+        return response
     }
 
     private static func requestableMediaType(_ type: RequestMediaType) throws -> String {

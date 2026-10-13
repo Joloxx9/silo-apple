@@ -58,6 +58,11 @@ struct TVRequestsPage: View {
             case .mine: mine.applyRequestUpdate(update)
             }
         }
+        .onChange(of: RequestsEventBus.shared.lastTitleState) { _, update in
+            // Only discover cards carry a title's follow state.
+            guard let update, mode == .hub else { return }
+            hub.applyTitleState(update)
+        }
         .overlay(alignment: .bottomLeading) {
             if let message = mine.actionErrorMessage {
                 Text(message)

@@ -50,6 +50,14 @@ final class RequestDetailViewModel {
     private(set) var actionErrorMessage: String?
     /// Bumped when the server accepts a new request, for the success haptic.
     private(set) var submittedCount = 0
+    /// A follow or unfollow is in flight. The button stays enabled and
+    /// focusable (tvOS keeps focus on it); `toggleFollow` ignores presses.
+    private(set) var isTogglingFollow = false
+    /// Confirms the last follow toggle under the button; cleared by the next
+    /// action.
+    private(set) var followNotice: String?
+    /// Bumped on every accepted follow toggle, for the success haptic.
+    private(set) var followToggledCount = 0
     /// A create was sent but its outcome is unknown. Create is
     /// `non_retryable`, so the CTA stays held until a fresh detail read
     /// shows whether the request exists.
@@ -57,21 +65,28 @@ final class RequestDetailViewModel {
 
     private let api: SiloAPI
     private let cache: RequestDetailCache
+    private let features: RequestsFeatureStore
     /// In-flight bus-triggered reload; cancelled and replaced on the next
     /// event so a slow earlier response can't overwrite a newer one.
     private var reloadTask: Task<Void, Never>?
+    /// Bumped when a follow toggle settles or another page's toggle arrives.
+    /// A detail read that started before the bump may predate the change,
+    /// so `load()` reads again instead of installing it.
+    private var titleStateRevision = 0
 
     init(
         mediaType: RequestMediaType,
         tmdbId: Int,
         api: SiloAPI = .shared,
-        cache: RequestDetailCache? = nil
+        cache: RequestDetailCache? = nil,
+        features: RequestsFeatureStore? = nil
     ) {
         self.mediaType = mediaType
         self.tmdbId = tmdbId
         self.api = api
         let cache = cache ?? .shared
         self.cache = cache
+        self.features = features ?? .shared
         // First frame from what the app already knows — the finished page
         // when this title was read before, the tapped card or record
         // otherwise — and the status from the user's own records. `load()`
@@ -158,6 +173,115 @@ final class RequestDetailViewModel {
         }
     }
 
+    // MARK: Follow
+
+    /// "Notify Me" applies to a title someone else already requested: its
+    /// request reads as pending or on the way (the same state the primary
+    /// action shows), and the viewer didn't make that request. Independent
+    /// of `isFollowing`, so the button stays on screen (and focused on tvOS)
+    /// while its label flips.
+    var canFollow: Bool {
+        guard features.followSupported, let detail else { return false }
+        let request = detail.request
+        // `requested_by_viewer` must be present and false: a page built
+        // from a card or record without it waits for the server's answer.
+        guard request.reason == "already_requested", request.requestedByViewer == false else { return false }
+        // Not `record`: `/requests/mine` lists the whole account, so another
+        // profile's request would hide the button from a profile the server
+        // lets follow. `requested_by_viewer` is per profile.
+        switch RequestDisplayState(availability: detail.availability, request: request) {
+        case .pending, .onTheWay: return true
+        default: return false
+        }
+    }
+
+    var isFollowing: Bool { detail?.request.following == true }
+
+    static let followedNotice = "We'll let you know when it's available."
+    static let unfollowedNotice = "Notification turned off."
+
+    /// Follows or unfollows the title. Both are naturally idempotent, so a
+    /// failure leaves the button as it was for another try. An uncertain
+    /// outcome may have landed: the button stays held until a re-read shows
+    /// the server's state.
+    func toggleFollow() async {
+        guard canFollow, let detail, !isTogglingFollow else { return }
+        let follow = !isFollowing
+        isTogglingFollow = true
+        defer { isTogglingFollow = false }
+        actionErrorMessage = nil
+        followNotice = nil
+        do {
+            let state: RequestState
+            if follow {
+                state = try await api.followRequestMedia(mediaType: detail.mediaType, tmdbId: detail.tmdbId)
+            } else {
+                // 204: nothing comes back but the change itself.
+                try await api.unfollowRequestMedia(mediaType: detail.mediaType, tmdbId: detail.tmdbId)
+                // From the page as it is now: a read may have refreshed it
+                // while the call ran.
+                var unfollowed = self.detail?.request ?? detail.request
+                unfollowed.following = false
+                state = unfollowed
+            }
+            titleStateRevision &+= 1
+            applyTitleState(state)
+            confirmFollowToggle(follow, state: state)
+        } catch {
+            titleStateRevision &+= 1
+            if RequestMutationFailure.isUncertain(error) {
+                // It may have landed. A read under a replaced owner says
+                // nothing about this toggle.
+                if !RequestMutationFailure.isOwnerChanged(error) {
+                    await load()
+                    // It landed: confirm it like any other toggle rather
+                    // than showing an error under the new label.
+                    if let landed = self.detail?.request, landed.following == follow {
+                        confirmFollowToggle(follow, state: landed)
+                        return
+                    }
+                }
+                actionErrorMessage = RequestErrorCopy.message(for: error)
+                return
+            }
+            actionErrorMessage = RequestErrorCopy.message(for: error)
+            if Self.isCapabilityProblem(error) {
+                // Requests or following went away: let entry points and this
+                // button follow the server.
+                await features.refresh()
+            } else if case APIv2Error.problem = error {
+                // The request may have landed or been cancelled meanwhile.
+                await load()
+            }
+        }
+    }
+
+    private func applyTitleState(_ state: RequestState) {
+        detail?.request = state
+        if let detail { cache.store(detail) }
+    }
+
+    /// Tells the user, and every card, about a toggle the server accepted.
+    private func confirmFollowToggle(_ follow: Bool, state: RequestState) {
+        RequestsEventBus.shared.publishTitleState(
+            RequestTitleStateUpdate(mediaType: mediaType, tmdbId: tmdbId, request: state))
+        followNotice = follow ? Self.followedNotice : Self.unfollowedNotice
+        followToggledCount += 1
+    }
+
+    private static func isCapabilityProblem(_ error: Error) -> Bool {
+        guard case APIv2Error.problem(let problem) = error else { return false }
+        return problem.identifier.hasPrefix("capability_")
+    }
+
+    /// Bus consumer: the title was followed or unfollowed on another page.
+    func applyTitleStateUpdate(_ update: RequestTitleStateUpdate) {
+        guard update.mediaType == mediaType, update.tmdbId == tmdbId,
+              !isTogglingFollow, detail?.request != update.request else { return }
+        titleStateRevision &+= 1
+        detail?.request = update.request
+    }
+
     /// Recommendations, minus rows the card can't route (unknown types).
     var recommendations: [RequestMediaResult] {
         (detail?.recommendations ?? []).filter { $0.mediaType != .unknown }
@@ -167,7 +291,7 @@ final class RequestDetailViewModel {
         isLoading = detail == nil
         error = nil
         do {
-            let fresh = try await api.requestsDetail(mediaType: mediaType, tmdbId: tmdbId)
+            let fresh = try await readDetail()
             detail = fresh
             hasFreshDetail = true
             cache.store(fresh)
@@ -185,6 +309,17 @@ final class RequestDetailViewModel {
             }
         }
         isLoading = false
+    }
+
+    /// The title's detail, read again when a follow toggle settled while the
+    /// read ran: that answer may predate the toggle.
+    private func readDetail() async throws -> RequestMediaDetail {
+        while true {
+            let revision = titleStateRevision
+            let fresh = try await api.requestsDetail(mediaType: mediaType, tmdbId: tmdbId)
+            if revision == titleStateRevision { return fresh }
+            try Task.checkCancellation()
+        }
     }
 
     /// The user's current request for this title (see

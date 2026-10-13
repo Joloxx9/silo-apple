@@ -23,6 +23,10 @@ final class RequestsFeatureStore {
     /// default, so no separate loading state exists.
     private(set) var isEnabled = false
 
+    /// Whether the server lets a viewer follow a title someone else already
+    /// requested ("Notify Me"). False whenever `isEnabled` is.
+    private(set) var followSupported = false
+
     /// Bumped on every `reset()` so a probe that finishes after a sign-out
     /// or profile switch discards its result instead of repopulating the
     /// next account's flag.
@@ -41,11 +45,14 @@ final class RequestsFeatureStore {
         // On error, keep the previous value: a transient failure shouldn't
         // yank an already-visible entry point, and foreground/auth-state
         // transitions retry naturally.
-        isEnabled = status?.isAvailable ?? isEnabled
+        let enabled = status?.isAvailable ?? isEnabled
+        followSupported = enabled && (status.map { $0.followSupported == true } ?? followSupported)
+        isEnabled = enabled
     }
 
     func reset() {
         generation &+= 1
         isEnabled = false
+        followSupported = false
     }
 }

@@ -130,6 +130,16 @@ final class RequestsHubViewModel {
         isSearching = false
     }
 
+    /// Bus consumer: a follow toggle patches the title's cards in place.
+    func applyTitleState(_ update: RequestTitleStateUpdate) {
+        searchResults.applyTitleState(update)
+        carousels = carousels.map { carousel in
+            var results = carousel.results
+            results.applyTitleState(update)
+            return RequestCarousel(id: carousel.id, title: carousel.title, results: results)
+        }
+    }
+
     /// Bus consumer: patch every visible surface in place after a mutation
     /// anywhere in the app (detail submit, My Requests cancel, …).
     func applyRequestUpdate(_ record: MediaRequest) {
