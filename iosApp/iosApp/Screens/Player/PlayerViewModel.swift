@@ -4306,7 +4306,7 @@ class PlayerViewModel {
     /// Called when the active backend reports natural EOF. Move the shell into
     /// a paused end-state immediately so the player does not look frozen if
     /// auto-play-next is unavailable.
-    private func handleEndOfFile() {
+    func handleEndOfFile() {
         // Once per load. Two callers can land here for the same end — the
         // `.ended` event and a near-end playback error reclassified as a
         // natural finish — and running twice would raise the Next Up postroll
@@ -4405,12 +4405,6 @@ class PlayerViewModel {
             // or hit Back.
             nextUpAutoplayCancelled = true
             cancelNextUpCountdown()
-            showNotice(
-                title: "Connection lost",
-                message: "Lost connection to the server before the episode finished.",
-                tone: .warning,
-                duration: 6
-            )
         }
 
         #if os(iOS) || os(tvOS)
@@ -4503,6 +4497,22 @@ class PlayerViewModel {
             return
         }
         beginNextUpPostroll(videoEnded: true)
+
+        // After the postroll, which clears notices left over from playback;
+        // the postroll shows this one.
+        if isPremature {
+            // A download has no connection to lose: its early end is a file
+            // that stops short.
+            let isDownload = lastLoadRequest?.offlineDownloadId != nil
+            showNotice(
+                title: isDownload ? "Download incomplete" : "Connection lost",
+                message: isDownload
+                    ? "The downloaded video file ends early. Delete and re-download it."
+                    : "Lost connection to the server before the episode finished.",
+                tone: .warning,
+                duration: 6
+            )
+        }
     }
 
 
@@ -5360,21 +5370,32 @@ class PlayerViewModel {
             isLoadingNextUpEpisode = false
             showNextUpScreen = true
             nextUpScreenVideoEnded = true
+            var noticeTitle = "Couldn't start the next episode"
             // A shuffle keeps offering the pick that failed: Play Now
             // retries it, since it never reached a first frame. A later part
             // of an item that already played moves on to the next pick.
             if let shuffleState {
-                shuffleActionError = lastLoadRequest?.contentId == shuffleState.advanceFromContentId
-                    ? "Couldn't play the next part."
-                    : "Couldn't start the next pick."
+                let isNextPart = lastLoadRequest?.contentId == shuffleState.advanceFromContentId
+                shuffleActionError = isNextPart ? "Couldn't play the next part." : "Couldn't start the next pick."
+                noticeTitle = isNextPart ? "Couldn't play the next part" : "Couldn't start the next pick"
                 publishShuffleNextUp()
             }
-            showNotice(
-                title: "Couldn't start the next episode",
-                message: message,
-                tone: .warning,
-                duration: 6
-            )
+            // The tvOS episode panel shows the reason itself. The other
+            // panels only say the start failed, and macOS has no postroll, so
+            // there the notice carries the reason.
+            #if os(tvOS)
+            let panelShowsReason = shuffleState == nil
+            #else
+            let panelShowsReason = false
+            #endif
+            if !panelShowsReason {
+                showNotice(
+                    title: noticeTitle,
+                    message: message,
+                    tone: .warning,
+                    duration: 6
+                )
+            }
         case .recovery:
             let logMessage = MediaLogRedactor.sanitize(message)
             Self.logger.warning(

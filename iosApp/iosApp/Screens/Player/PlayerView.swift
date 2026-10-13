@@ -138,9 +138,6 @@ struct PlayerView: View {
                     loadingCloseButton
                     #endif
                 } else {
-                    #if os(iOS)
-                    if viewModel.showNextUpScreen { loadingCloseButton }
-                    #endif
                     if !viewModel.showNextUpScreen {
 
                         #if os(tvOS)
@@ -286,21 +283,28 @@ struct PlayerView: View {
                         }
                         #endif
 
-                        #if os(tvOS)
-                        if let identity = remoteIdentityNotice {
-                            RemotePlaybackIdentityNotice(identity: identity)
-                                .transition(.opacity)
-                        } else if let notice = viewModel.presentedNotice {
-                            PlayerNoticeOverlay(notice: notice)
-                        }
-                        #else
-                        if let notice = viewModel.presentedNotice {
-                            PlayerNoticeOverlay(notice: notice)
-                        }
-                        #endif
-
                         subtitleSyncIndicator
                     }
+
+                    // Outside the playback-only branch, so an end that stopped
+                    // short explains itself on the end-of-playback screen too,
+                    // above that screen's video preview.
+                    #if os(tvOS)
+                    if let identity = remoteIdentityNotice {
+                        RemotePlaybackIdentityNotice(identity: identity)
+                            .transition(.opacity)
+                    } else if let notice = viewModel.presentedNotice {
+                        PlayerNoticeOverlay(notice: notice)
+                    }
+                    #else
+                    if let notice = viewModel.presentedNotice {
+                        PlayerNoticeOverlay(notice: notice)
+                    }
+                    #endif
+                    #if os(iOS)
+                    // Above the notice, which starts at the same corner.
+                    if viewModel.showNextUpScreen { loadingCloseButton }
+                    #endif
 
                     #if os(tvOS)
                     if let message = watchPartySyncMessage {
