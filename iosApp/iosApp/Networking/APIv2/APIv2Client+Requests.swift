@@ -56,7 +56,7 @@ extension APIv2Client {
 
     /// The acting profile's own requests, up to 100 pages (see `requestList`).
     func myRequests() async throws -> [MediaRequest] {
-        try await requestList(path: "/api/v2/requests/mine", filters: [:], maxPages: 100)
+        try await requestList(path: "/api/v2/requests/mine", maxPages: 100)
     }
 
     // MARK: cancelRequest (non_retryable)
@@ -66,36 +66,10 @@ extension APIv2Client {
         return try await requestsCall("POST", path: path, body: try Self.encode(CancelRequestBody(reason: reason)), status: 200)
     }
 
-    // MARK: Admin moderation (acting admin)
-
-    /// `GET /api/v2/admin/requests/capabilities`. Answers only for an admin
-    /// acting as the account's primary profile; anyone else gets a
-    /// permission problem, which callers read as "no approvals".
-    func adminRequestCapabilities() async throws -> AdminRequestCapabilities {
-        try await requestsCall("GET", path: "/api/v2/admin/requests/capabilities", status: 200)
-    }
-
-    /// Every request matching the filter, across all users, newest first, up
-    /// to 40 pages (see `requestList`). `tmdbId` narrows the list to one title through `q`, which also
-    /// matches titles containing the number, so callers still match the id.
-    func adminRequests(
-        status: RequestStatus?,
-        outcome: RequestOutcome?,
-        mediaType: RequestMediaType? = nil,
-        tmdbId: Int? = nil
-    ) async throws -> [MediaRequest] {
-        var filters: [String: String] = [:]
-        if let status { filters["status"] = status.rawValue }
-        if let outcome { filters["outcome"] = outcome.rawValue }
-        if let mediaType, mediaType == .movie || mediaType == .series { filters["media_type"] = mediaType.rawValue }
-        if let tmdbId { filters["q"] = String(tmdbId) }
-        return try await requestList(path: "/api/v2/admin/requests", filters: filters, maxPages: 40)
-    }
-
     /// Follows `page.next_cursor` under one owner captured at the start. A
     /// failed page, a missing or repeated cursor, or the page bound fails the
     /// whole load instead of returning a partial list.
-    private func requestList(path: String, filters: [String: String], maxPages: Int) async throws -> [MediaRequest] {
+    private func requestList(path: String, maxPages: Int) async throws -> [MediaRequest] {
         guard let auth = await tokenStore.captureOrdinaryRequestAuth(),
               let profile = auth.profileId else { throw HTTPError.requestIdentityChanged }
         let identity = Self.requestIdentity(auth, profile: profile)
@@ -104,8 +78,7 @@ extension APIv2Client {
         var seen: Set<String> = []
         for _ in 0..<maxPages {
             try await gate()
-            var query = filters
-            query["limit"] = "50"
+            var query = ["limit": "50"]
             if let cursor { query["cursor"] = cursor }
             let requestQuery = query
             let raw = try await tokenStore.withOwnerFence(auth) {
@@ -124,13 +97,6 @@ extension APIv2Client {
             cursor = next
         }
         throw APIv2Error.incompleteRequestList
-    }
-
-    /// `POST /api/v2/admin/requests/{id}/{approve|decline|retry}`
-    /// (non_retryable). Decline carries an optional reason.
-    func adminRequestAction(id: String, action: AdminRequestAction, reason: String?) async throws -> MediaRequest {
-        let path = "/api/v2/admin/requests/\(try catalogPathSegment(id))/\(action.rawValue)"
-        return try await requestsCall("POST", path: path, body: try Self.encode(CancelRequestBody(reason: reason)), status: 200)
     }
 
     // MARK: Transport

@@ -2,6 +2,8 @@
 
 The Apple clients call `/api/v2/requests` for the request capability, search, discovery, detail, create, My Requests, and cancel. The methods live in `APIv2Client+Requests.swift`; `SiloAPI+Requests.swift` forwards to them. No request falls back to v1.
 
+Request administration (approve, decline, retry, request limits, auto-approve) stays in the web admin. The Apple clients have no approvals queue or moderation actions and never call `/api/v2/admin/requests`, even for an admin account.
+
 ## Scope and ownership
 
 Every operation is profile scoped. A call needs a selected profile, sends `X-Profile-Id` (plus `X-Profile-Token` when the profile has a proof), and runs under the owner captured when it starts. A profile, account, or server change before dispatch refuses the call; a change while it is in flight discards the response.

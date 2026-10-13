@@ -16,7 +16,6 @@ import SwiftUI
 struct RequestDetailView: View {
     @State private var viewModel: RequestDetailViewModel
     @Environment(AppRouter.self) private var router
-    @State private var isConfirmingDecline = false
     /// Closes the whole detail card; set when this page is the card's root.
     private let onClose: (() -> Void)?
     #if os(tvOS)
@@ -50,23 +49,13 @@ struct RequestDetailView: View {
         .animation(.smooth(duration: 0.3), value: viewModel.hasFreshDetail)
         .animation(.smooth(duration: 0.3), value: viewModel.progress)
         .sensoryFeedback(.success, trigger: viewModel.submittedCount)
-        .sensoryFeedback(.success, trigger: viewModel.moderatedCount)
         .sensoryFeedback(trigger: viewModel.actionErrorMessage) { _, message in
             guard let message else { return nil }
-            // An unconfirmed create, cancel, or decision may still have
-            // landed, so it warns.
+            // An unconfirmed create or cancel may still have landed, so it
+            // warns.
             let unconfirmed = viewModel.isSubmissionUnconfirmed
-                || viewModel.isModerationUnconfirmed
                 || message == RequestErrorCopy.unconfirmedCancelMessage
             return unconfirmed ? .warning : .error
-        }
-        .alert("Decline this request?", isPresented: $isConfirmingDecline) {
-            Button("Decline", role: .destructive) {
-                Task { await viewModel.moderate(.decline) }
-            }
-            Button("Keep", role: .cancel) {}
-        } message: {
-            Text("The person who asked for it will see it as declined.")
         }
         .onChange(of: RequestsEventBus.shared.lastUpdate) { _, update in
             if let update {
@@ -200,10 +189,6 @@ struct RequestDetailView: View {
                 RequestStatusCard(progress: progress, record: viewModel.displayedRecord)
             }
 
-            if !viewModel.moderationActions.isEmpty {
-                phoneModerationRow
-            }
-
             if viewModel.canCancel {
                 Button(role: .destructive) {
                     Task { await viewModel.cancel() }
@@ -217,44 +202,7 @@ struct RequestDetailView: View {
             }
         }
     }
-    /// Admin decision on someone's request, under their status.
-    private var phoneModerationRow: some View {
-        HStack(spacing: 8) {
-            ForEach(viewModel.moderationActions, id: \.self) { action in
-                Button {
-                    if action == .decline {
-                        isConfirmingDecline = true
-                    } else {
-                        Task { await viewModel.moderate(action) }
-                    }
-                } label: {
-                    Label(moderationTitle(action), systemImage: moderationIcon(action))
-                        .font(.subheadline.weight(action == .decline ? .semibold : .bold))
-                        .foregroundStyle(action == .decline ? Color.siloOnSurface : Color.black)
-                        .frame(maxWidth: .infinity, minHeight: 44)
-                        .background(Capsule().fill(action == .decline ? Color.siloChromeSelectedFill : Color.white))
-                }
-                .buttonStyle(.plain)
-            }
-        }
-    }
     #endif
-
-    private func moderationTitle(_ action: AdminRequestAction) -> String {
-        switch action {
-        case .approve: "Approve"
-        case .decline: "Decline"
-        case .retry: "Retry"
-        }
-    }
-
-    private func moderationIcon(_ action: AdminRequestAction) -> String {
-        switch action {
-        case .approve: "checkmark"
-        case .decline: "xmark"
-        case .retry: "arrow.clockwise"
-        }
-    }
 
     // MARK: - tvOS
 
@@ -303,18 +251,6 @@ struct RequestDetailView: View {
         HStack(spacing: 18) {
             primaryActionButton
                 .focused($primaryFocused)
-
-            ForEach(viewModel.moderationActions, id: \.self) { action in
-                if action == .decline {
-                    TVSecondaryPillButton(icon: moderationIcon(action), title: moderationTitle(action)) {
-                        isConfirmingDecline = true
-                    }
-                } else {
-                    TVPrimaryPillButton(icon: moderationIcon(action), title: moderationTitle(action)) {
-                        Task { await viewModel.moderate(action) }
-                    }
-                }
-            }
 
             if viewModel.canCancel {
                 TVSecondaryPillButton(icon: "xmark", title: "Cancel Request") {
@@ -521,9 +457,6 @@ struct RequestDetailView: View {
     /// Where the title stands, in the slot a library title uses for its
     /// editorial eyebrow.
     private var eyebrow: String? {
-        if viewModel.moderationRecord != nil, viewModel.openedForModeration || viewModel.record == nil {
-            return "Requested by someone on this server"
-        }
         guard let display = viewModel.progress?.display else { return "Not in your library" }
         return display == .inLibrary ? nil : "Requested"
     }

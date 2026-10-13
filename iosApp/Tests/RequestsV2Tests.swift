@@ -474,48 +474,6 @@ final class RequestsV2Tests: XCTestCase {
     }
 
     @MainActor
-    func testAnApprovalPinOpensOneModerationPageOnly() async throws {
-        let tokens = try await tokens()
-        let api = SiloAPI(http: HTTPClient(session: stub.makeSession(), tokenStore: tokens), tokenStore: tokens)
-        let cache = RequestDetailCache()
-        let queued = try HTTPClient.makeJSONDecoder().decode(MediaRequest.self, from: Data(Self.record.utf8))
-        cache.pinModeration(queued)
-        stub.reply(200, Self.detail)
-
-        let fromQueue = RequestDetailViewModel(mediaType: .movie, tmdbId: 949, api: api, cache: cache)
-        XCTAssertTrue(fromQueue.openedForModeration)
-        await fromQueue.load()
-
-        // Backing out and reopening the title from anywhere else is an
-        // ordinary page, not a moderation page for someone else's request.
-        let later = RequestDetailViewModel(mediaType: .movie, tmdbId: 949, api: api, cache: cache)
-        XCTAssertFalse(later.openedForModeration)
-    }
-
-    @MainActor
-    func testALostApprovalUnlocksWhenItsHoldRunsOutWithoutAnotherRead() async throws {
-        let tokens = try await tokens()
-        let api = SiloAPI(http: HTTPClient(session: stub.makeSession(), tokenStore: tokens), tokenStore: tokens)
-        let model = RequestApprovalsViewModel(api: api, holdLifetime: .milliseconds(250))
-        addTeardownBlock { @MainActor in RequestDetailCache.shared.clear() }
-        stub.reply(path: "/api/v2/admin/requests", 200, #"{"items":[\#(Self.record)],"page":{"has_more":false}}"#)
-        // The approve (and every other read) is lost.
-        stub.fail()
-        await model.load()
-        let request = try XCTUnwrap(model.awaitingApproval.first)
-
-        await model.perform(.approve, on: request)
-        XCTAssertFalse(model.canAct(on: request), "a read showing the request unchanged keeps the hold")
-
-        for _ in 0..<500 where !model.canAct(on: request) {
-            try await Task.sleep(for: .milliseconds(10))
-        }
-        XCTAssertTrue(model.canAct(on: request), "the hold ends on time with no read to settle it")
-        XCTAssertNil(model.actionErrorMessage)
-        XCTAssertEqual(stub.requests.filter { $0.method == "POST" }.count, 1, "releasing the hold never resends")
-    }
-
-    @MainActor
     func testCreateInterruptedByAnOwnerChangeHoldsWithoutReReading() async throws {
         let tokens = try await tokens()
         let api = SiloAPI(http: HTTPClient(session: stub.makeSession(), tokenStore: tokens), tokenStore: tokens)
@@ -591,25 +549,31 @@ final class RequestsV2Tests: XCTestCase {
         XCTAssertEqual(model.progress?.display, .inLibrary)
     }
 
-    @MainActor
-    func testApprovalCacheKeepsThePendingRequestOverAFailedOne() throws {
-        let decoder = HTTPClient.makeJSONDecoder()
-        let pending = try decoder.decode(MediaRequest.self, from: Data(Self.record("pending", outcome: "active",
-            createdAt: "2026-02-02T03:04:05.000Z").utf8))
-        let failed = try decoder.decode(MediaRequest.self, from: Data(Self.record("failed", outcome: "failed",
-            createdAt: "2026-01-02T03:04:05.000Z").utf8))
-        let cache = RequestDetailCache()
-        // Approvals stores its queue as `awaitingApproval + failed`.
-        cache.storeModerationRecords([pending, failed])
-        XCTAssertEqual(cache.moderationRecord(.init(mediaType: .movie, tmdbId: 949))?.id, "pending")
-    }
+    // MARK: No request administration
 
-    func testAdminReadForOneTitleFiltersOnTheServer() async throws {
-        let (client, _) = try await client()
-        stub.reply(200, #"{"items":[],"page":{"has_more":false}}"#)
-        _ = try await client.adminRequests(status: .pending, outcome: .active, mediaType: .movie, tmdbId: 949)
-        XCTAssertEqual(stub.requests.first?.path, "/api/v2/admin/requests")
-        XCTAssertEqual(stub.requests.first?.query,
-            ["limit": "50", "status": "pending", "outcome": "active", "media_type": "movie", "q": "949"])
+    /// Request administration stays in the web admin: probing the feature
+    /// and opening a title someone else requested read only the viewer's
+    /// own request surface, never `/api/v2/admin/requests`.
+    @MainActor
+    func testRequestsNeverReachTheAdminModerationAPI() async throws {
+        let tokens = try await tokens()
+        let api = SiloAPI(http: HTTPClient(session: stub.makeSession(), tokenStore: tokens), tokenStore: tokens)
+        stub.reply(path: "/api/v2/requests/status", 200,
+            #"{"requests_enabled":true,"rating_restrictions_enforced":false,"revision":"r","state":"available","allowed":true}"#)
+        let store = RequestsFeatureStore(api: api)
+        await store.refresh()
+        XCTAssertTrue(store.isEnabled)
+
+        let requestedBySomeoneElse = Self.detail.replacingOccurrences(of: #""request":{"requestable":true}"#,
+            with: #""request":{"requestable":false,"status":"pending","reason":"already_requested"}"#)
+        stub.reply(path: "/api/v2/requests/detail/movie/949", 200, requestedBySomeoneElse)
+        stub.reply(path: "/api/v2/requests/mine", 200, #"{"items":[],"page":{"has_more":false}}"#)
+        let model = RequestDetailViewModel(mediaType: .movie, tmdbId: 949, api: api, cache: RequestDetailCache())
+        await model.load()
+        XCTAssertEqual(model.primaryAction, .status(.pending))
+        XCTAssertFalse(model.canCancel, "someone else's request offers no action")
+
+        XCTAssertEqual(stub.requestedPaths,
+            ["/api/v2/requests/status", "/api/v2/requests/detail/movie/949", "/api/v2/requests/mine"])
     }
 }
