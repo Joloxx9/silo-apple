@@ -74,7 +74,9 @@ final class AetherScrubPreviewProvider {
     func begin(atSourceTime sourceTime: Double) {
         guard let spec = activeSpec else { return }
         onPreview?(nil)
-        if serverPreviews == nil, !engine.supportsCacheBackedStills {
+        // The extractor is kept even when the server's previews are set: it
+        // is the fallback for a sheet that cannot be fetched.
+        if !engine.supportsCacheBackedStills {
             if extractor == nil {
                 extractor = engine.makeFrameExtractor(
                     url: spec.sourceURL,

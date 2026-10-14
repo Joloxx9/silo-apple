@@ -318,8 +318,10 @@ class PlayerViewModel {
             do {
                 trickplay = try await SiloAPI.shared.watchTrickplay(contentId: contentId, fileId: fileId)
             } catch {
-                // Stills from the player's cache remain the fallback.
+                // Stills from the player's cache remain the fallback. Forget
+                // the key so a later load of the same file tries again.
                 Self.logger.info("Seek-bar previews unavailable: \(error.localizedDescription, privacy: .public)")
+                if let self, self.serverTrickplayKey == key { self.serverTrickplayKey = nil }
                 return
             }
             guard let self, !Task.isCancelled, self.serverTrickplayKey == key else { return }
