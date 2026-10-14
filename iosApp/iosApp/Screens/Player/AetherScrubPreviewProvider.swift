@@ -214,8 +214,26 @@ final class AetherScrubPreviewProvider {
                   requestGeneration == request.requestGeneration else {
                 continue
             }
-            guard let image else { continue }
+            guard let image else {
+                retryWhenSheetArrives(request)
+                continue
+            }
             onPreview?(Preview(image: image, sourceTime: request.sourceTime))
+        }
+    }
+
+    /// A scrub held still past the buffer gave up on a sheet that was still
+    /// downloading. Ask again for the same target once it arrives, unless a
+    /// newer target or session has replaced it.
+    private func retryWhenSheetArrives(_ request: PendingRequest) {
+        guard let sheets = serverPreviews else { return }
+        Task { @MainActor [weak self] in
+            guard await sheets.awaitSheet(atSourceTime: request.sourceTime),
+                  let self,
+                  self.serverPreviews === sheets,
+                  self.sessionGeneration == request.sessionGeneration,
+                  self.requestGeneration == request.requestGeneration else { return }
+            self.request(atSourceTime: request.sourceTime)
         }
     }
 

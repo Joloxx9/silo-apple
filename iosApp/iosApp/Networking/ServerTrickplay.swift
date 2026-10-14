@@ -140,18 +140,31 @@ actor ServerTrickplaySheets {
     private func sheetData(_ sheet: Int) async -> Data? {
         guard !closed, trickplay.sheetURLs.indices.contains(sheet) else { return nil }
         if let bytes = data[sheet] { return bytes }
-        let fetch = fetch(sheet)
-        // Leaving the race early does not cancel the download: it is an
-        // unstructured task and keeps the sheet for the next scrub.
-        return await withTaskGroup(of: Data?.self) { group in
-            group.addTask { await fetch.value }
-            group.addTask {
-                try? await Task.sleep(for: Self.sheetWait)
-                return nil
+        return await Self.value(of: fetch(sheet), within: Self.sheetWait)
+    }
+
+    /// Waits for a sheet that is still downloading, however long it takes,
+    /// and reports whether it is now held. A scrub that gave up on it uses
+    /// this to ask again once it arrives. Without a download in flight there
+    /// is nothing to wait for, so the answer is false.
+    func awaitSheet(atSourceTime seconds: Double) async -> Bool {
+        guard let tile = trickplay.tile(atSourceTime: seconds),
+              data[tile.sheet] == nil, let fetch = fetches[tile.sheet] else { return false }
+        _ = await fetch.value
+        return !closed && data[tile.sheet] != nil
+    }
+
+    /// A download's result, or nil once `limit` passes. Returning at the
+    /// deadline does not wait for or cancel the download: it is an
+    /// unstructured task and keeps the sheet for the next scrub.
+    private static func value(of fetch: Task<Data?, Never>, within limit: Duration) async -> Data? {
+        await withCheckedContinuation { continuation in
+            let once = ResumeOnce(continuation)
+            Task { once.resume(with: await fetch.value) }
+            Task {
+                try? await Task.sleep(for: limit)
+                once.resume(with: nil)
             }
-            let first = await group.next() ?? nil
-            group.cancelAll()
-            return first
         }
     }
 
@@ -194,12 +207,35 @@ actor ServerTrickplaySheets {
     /// downloaded are kept; concurrent callers share one request.
     private func renewManifest() async {
         guard !closed else { return }
-        let task = renewal ?? Task { [renew] in await renew() }
+        if let renewal {
+            // The download that started this renewal installs its result;
+            // waiters only retry with whatever it installed.
+            _ = await renewal.value
+            return
+        }
+        let task = Task { [renew] in await renew() }
         renewal = task
         let renewed = await task.value
-        if renewal == task { renewal = nil }
-        if let renewed, renewed.hasSameLayout(as: trickplay) {
-            trickplay = renewed
-        }
+        renewal = nil
+        guard !closed, let renewed, renewed.hasSameLayout(as: trickplay) else { return }
+        trickplay = renewed
+    }
+}
+
+/// Resumes a continuation with the first result offered and ignores the rest.
+private final class ResumeOnce: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<Data?, Never>?
+
+    init(_ continuation: CheckedContinuation<Data?, Never>) {
+        self.continuation = continuation
+    }
+
+    func resume(with value: Data?) {
+        lock.lock()
+        let continuation = self.continuation
+        self.continuation = nil
+        lock.unlock()
+        continuation?.resume(returning: value)
     }
 }
