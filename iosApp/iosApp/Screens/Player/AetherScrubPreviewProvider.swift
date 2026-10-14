@@ -10,9 +10,9 @@ import Foundation
 /// the next item. Cache-backed native stills are preferred because they do
 /// not open a second connection; software playback falls back to Aether's
 /// session-coupled `FrameExtractor` over the exact load URL and headers.
-/// When the server published seek-bar previews for the file, those come
-/// first: they cover the whole file, not only what has been buffered, and
-/// need no decode or second reader.
+/// When the server published seek-bar previews for the file, they answer
+/// what the cache cannot, before any second reader: they cover the whole
+/// file, not only what has been buffered, and need no decode.
 @MainActor
 final class AetherScrubPreviewProvider {
     struct Preview {
@@ -186,22 +186,28 @@ final class AetherScrubPreviewProvider {
             pendingRequest = nil
             guard sessionGeneration == request.sessionGeneration else { continue }
 
-            var image = await serverPreviews?.thumbnail(atSourceTime: request.sourceTime)
-            if image == nil, let playerTime = request.playerTime {
-                if engine.supportsCacheBackedStills {
-                    // A nil is expected when the requested native segment is
-                    // not resident. Do not fall through to a second network
-                    // reader: that breaks single-connection/debrid sources.
-                    image = await engine.scrubThumbnail(
-                        atSeconds: playerTime,
-                        maxWidth: Self.thumbnailWidth
-                    )
-                } else if let extractor = request.extractor {
-                    image = await extractor.thumbnail(
-                        at: playerTime,
-                        maxWidth: Self.thumbnailWidth
-                    )
-                }
+            // Cache-backed stills come first: they are local, exact, and
+            // answer quickly with nil when the segment is not resident. The
+            // server's previews cover the rest of the file. A second network
+            // reader is the last resort, after the server's previews.
+            var image: CGImage?
+            if engine.supportsCacheBackedStills, let playerTime = request.playerTime {
+                // Do not fall through to a second network reader: that
+                // breaks single-connection/debrid sources.
+                image = await engine.scrubThumbnail(
+                    atSeconds: playerTime,
+                    maxWidth: Self.thumbnailWidth
+                )
+            }
+            if image == nil {
+                image = await serverPreviews?.thumbnail(atSourceTime: request.sourceTime)
+            }
+            if image == nil, !engine.supportsCacheBackedStills,
+               let playerTime = request.playerTime, let extractor = request.extractor {
+                image = await extractor.thumbnail(
+                    at: playerTime,
+                    maxWidth: Self.thumbnailWidth
+                )
             }
 
             guard sessionGeneration == request.sessionGeneration,

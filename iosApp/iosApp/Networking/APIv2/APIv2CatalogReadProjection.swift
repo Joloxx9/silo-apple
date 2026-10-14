@@ -526,8 +526,15 @@ extension ServerTrickplay {
                   ["http", "https"].contains(url.scheme?.lowercased() ?? "") else { return nil }
             return url
         }
-        let perSheet = columns * rows
-        guard urls.count == value.sheets.count, urls.count == (count + perSheet - 1) / perSheet else {
+        // A sheet's size in pixels must fit an Int; checked so a bad manifest
+        // is refused rather than trapping on overflow.
+        let (perSheet, tileOverflow) = columns.multipliedReportingOverflow(by: rows)
+        let (_, widthOverflow) = columns.multipliedReportingOverflow(by: thumbnailWidth)
+        let (_, heightOverflow) = rows.multipliedReportingOverflow(by: thumbnailHeight)
+        guard !tileOverflow, !widthOverflow, !heightOverflow else {
+            throw InvalidManifest.geometry
+        }
+        guard urls.count == value.sheets.count, urls.count == 1 + (count - 1) / perSheet else {
             throw InvalidManifest.sheets
         }
         sheetURLs = urls

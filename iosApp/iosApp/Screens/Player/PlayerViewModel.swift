@@ -325,7 +325,9 @@ class PlayerViewModel {
                 return
             }
             guard let self, !Task.isCancelled, self.serverTrickplayKey == key else { return }
-            let sheets = ServerTrickplaySheets(trickplay)
+            let sheets = ServerTrickplaySheets(trickplay) {
+                try? await SiloAPI.shared.watchTrickplay(contentId: contentId, fileId: fileId)
+            }
             self.scrubPreviewProvider.serverPreviews = sheets
             await sheets.prefetch()
         }
@@ -335,6 +337,9 @@ class PlayerViewModel {
         serverTrickplayTask?.cancel()
         serverTrickplayTask = nil
         serverTrickplayKey = nil
+        if let sheets = scrubPreviewProvider.serverPreviews {
+            Task { await sheets.shutdown() }
+        }
         scrubPreviewProvider.serverPreviews = nil
     }
 
