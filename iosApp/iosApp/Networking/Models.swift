@@ -889,6 +889,8 @@ struct FileVersion: Codable, Identifiable, Hashable {
     /// Server-resolved default audio track ordinal for this version.
     let effectiveAudioTrackIndex: Int?
     let effectiveAudioLanguage: String?
+    /// Whether the server publishes seek-bar previews for this file.
+    let trickplayAvailable: Bool?
     var id: Int { fileId }
     var editionDisplayLabel: String {
         let trimmed = editionRaw?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -920,7 +922,8 @@ struct FileVersion: Codable, Identifiable, Hashable {
         editionRaw: String? = nil,
         editionKey: String? = nil,
         effectiveAudioTrackIndex: Int? = nil,
-        effectiveAudioLanguage: String? = nil
+        effectiveAudioLanguage: String? = nil,
+        trickplayAvailable: Bool? = nil
     ) {
         self.fileId = fileId
         self.fileName = fileName
@@ -947,6 +950,7 @@ struct FileVersion: Codable, Identifiable, Hashable {
         self.editionKey = editionKey
         self.effectiveAudioTrackIndex = effectiveAudioTrackIndex
         self.effectiveAudioLanguage = effectiveAudioLanguage
+        self.trickplayAvailable = trickplayAvailable
     }
 }
 

@@ -1173,6 +1173,28 @@ struct APIv2Client: Sendable {
         return try WatchDetail(v2: HTTPClient.makeJSONDecoder(artworkServerURL: raw.url).decode(APIv2CatalogRead.WatchDetail.self, from: raw.data))
     }
 
+    /// The seek-bar previews of one of an item's files, for versions whose
+    /// `trickplay_available` is true.
+    func watchTrickplay(id: String, fileId: Int, auth: CapturedOrdinaryRequestAuth) async throws -> APIv2CatalogRead.WatchTrickplay {
+        try await gate()
+        guard let profile = auth.profileId, !profile.isEmpty,
+              await tokenStore.currentOrdinaryRequestAuth(matchingIdentityOf: auth) != nil else {
+            throw HTTPError.requestIdentityChanged
+        }
+        try Task.checkCancellation()
+        let identity = Self.requestIdentity(auth, profile: profile)
+        let path = "/api/v2/watch/\(try catalogPathSegment(id))/trickplay"
+        let raw = try await tokenStore.withOwnerFence(auth) {
+            try await mapErrors {
+                try await http.requestData(method: "GET", path: path, query: ["file_id": String(fileId)],
+                    requestIdentity: identity, expectedAccount: auth.account, expectedAuth: auth)
+            }
+        }
+        try Task.checkCancellation()
+        guard raw.statusCode == 200 else { throw APIv2Error.httpStatus(raw.statusCode) }
+        return try HTTPClient.makeJSONDecoder(artworkServerURL: raw.url).decode(APIv2CatalogRead.WatchTrickplay.self, from: raw.data)
+    }
+
     func playbackCapabilities(auth: CapturedOrdinaryRequestAuth) async throws -> APIv2PlaybackCapabilities {
         let raw = try await playbackRequest(method: "GET", suffix: "/capabilities", auth: auth)
         guard raw.statusCode == 200 else { throw PlaybackSequencedError.invalidResponse }

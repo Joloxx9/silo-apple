@@ -10,6 +10,9 @@ import Foundation
 /// the next item. Cache-backed native stills are preferred because they do
 /// not open a second connection; software playback falls back to Aether's
 /// session-coupled `FrameExtractor` over the exact load URL and headers.
+/// When the server published seek-bar previews for the file, those come
+/// first: they cover the whole file, not only what has been buffered, and
+/// need no decode or second reader.
 @MainActor
 final class AetherScrubPreviewProvider {
     struct Preview {
@@ -19,12 +22,19 @@ final class AetherScrubPreviewProvider {
 
     var onPreview: ((Preview?) -> Void)?
 
+    /// The server's previews for the file being played, set by the owner of
+    /// the playback item. They outlive load generations: a replan or quality
+    /// switch plays the same file.
+    var serverPreviews: ServerTrickplaySheets?
+
     private static let requestDebounce: Duration = .milliseconds(80)
     private static let thumbnailWidth = 480
 
     private struct PendingRequest {
         let sourceTime: Double
-        let playerTime: Double
+        /// Nil when the loaded transport cannot express the target; only
+        /// the server's previews can answer it then.
+        let playerTime: Double?
         let extractor: FrameExtractor?
         let sessionGeneration: UInt64
         let requestGeneration: UInt64
@@ -64,7 +74,7 @@ final class AetherScrubPreviewProvider {
     func begin(atSourceTime sourceTime: Double) {
         guard let spec = activeSpec else { return }
         onPreview?(nil)
-        if !engine.supportsCacheBackedStills {
+        if serverPreviews == nil, !engine.supportsCacheBackedStills {
             if extractor == nil {
                 extractor = engine.makeFrameExtractor(
                     url: spec.sourceURL,
@@ -72,7 +82,7 @@ final class AetherScrubPreviewProvider {
                 )
             }
         }
-        if !engine.supportsCacheBackedStills, let extractor {
+        if serverPreviews == nil, !engine.supportsCacheBackedStills, let extractor {
             prewarmTask?.cancel()
             prewarmTask = Task {
                 await extractor.prewarm()
@@ -93,8 +103,9 @@ final class AetherScrubPreviewProvider {
     /// with a neutral (nil) publication. Converting them through
     /// `playerPosition(forSourceTime:)` clamps to player time 0, which would
     /// present the transport's first frame as if it were the requested source
-    /// moment. Only a server replan can produce a transport containing them,
-    /// and server-backed preview fetching is out of scope here.
+    /// moment. The server's previews still answer them, since they are
+    /// indexed by source time; without those, only a server replan can
+    /// produce a transport containing them.
     func request(atSourceTime sourceTime: Double) {
         guard sourceTime.isFinite, sourceTime >= 0 else {
             // An invalid target still supersedes whatever was decoding: fence
@@ -110,9 +121,12 @@ final class AetherScrubPreviewProvider {
         }
 
         requestGeneration &+= 1
-        guard case let .local(playerTime) = spec.timeline.seekDisposition(
-            forSourceTime: sourceTime
-        ) else {
+        let playerTime: Double?
+        if case let .local(time) = spec.timeline.seekDisposition(forSourceTime: sourceTime) {
+            playerTime = time
+        } else if serverPreviews != nil {
+            playerTime = nil
+        } else {
             pendingRequest = nil
             onPreview?(nil)
             return
@@ -170,23 +184,22 @@ final class AetherScrubPreviewProvider {
             pendingRequest = nil
             guard sessionGeneration == request.sessionGeneration else { continue }
 
-            let playerTime = request.playerTime
-            let image: CGImage?
-            if engine.supportsCacheBackedStills {
-                // A nil is expected when the requested native segment is not
-                // resident. Do not fall through to a second network reader:
-                // that breaks single-connection/debrid sources.
-                image = await engine.scrubThumbnail(
-                    atSeconds: playerTime,
-                    maxWidth: Self.thumbnailWidth
-                )
-            } else if let extractor = request.extractor {
-                image = await extractor.thumbnail(
-                    at: playerTime,
-                    maxWidth: Self.thumbnailWidth
-                )
-            } else {
-                image = nil
+            var image = await serverPreviews?.thumbnail(atSourceTime: request.sourceTime)
+            if image == nil, let playerTime = request.playerTime {
+                if engine.supportsCacheBackedStills {
+                    // A nil is expected when the requested native segment is
+                    // not resident. Do not fall through to a second network
+                    // reader: that breaks single-connection/debrid sources.
+                    image = await engine.scrubThumbnail(
+                        atSeconds: playerTime,
+                        maxWidth: Self.thumbnailWidth
+                    )
+                } else if let extractor = request.extractor {
+                    image = await extractor.thumbnail(
+                        at: playerTime,
+                        maxWidth: Self.thumbnailWidth
+                    )
+                }
             }
 
             guard sessionGeneration == request.sessionGeneration,
