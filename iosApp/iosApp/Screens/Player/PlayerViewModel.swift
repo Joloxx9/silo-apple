@@ -341,19 +341,35 @@ class PlayerViewModel {
             do {
                 trickplay = try await SiloAPI.shared.watchTrickplay(contentId: contentId, fileId: fileId)
             } catch {
+                // A cancelled request was cleared, and the key may already
+                // name its replacement.
+                guard !Task.isCancelled else { return }
                 // Stills from the player's cache remain the fallback. Forget
                 // the key so a later load of the same file tries again.
                 Self.logger.info("Seek-bar previews unavailable: \(error.localizedDescription, privacy: .public)")
                 if let self, self.serverTrickplayKey == key { self.serverTrickplayKey = nil }
                 return
             }
-            guard let self, !Task.isCancelled, self.serverTrickplayKey == key else { return }
-            let sheets = ServerTrickplaySheets(trickplay) {
-                try? await SiloAPI.shared.watchTrickplay(contentId: contentId, fileId: fileId)
-            }
-            self.scrubPreviewProvider.serverPreviews = sheets
-            await sheets.prefetch()
+            // The prefetch does not hold the view model.
+            let sheets = self?.installServerTrickplay(trickplay, contentId: contentId, key: key)
+            await sheets?.prefetch()
         }
+    }
+
+    /// Hands the scrub previews the sheets for `key`, unless the load was
+    /// cleared or replaced meanwhile.
+    private func installServerTrickplay(
+        _ trickplay: ServerTrickplay,
+        contentId: String,
+        key: String
+    ) -> ServerTrickplaySheets? {
+        guard !Task.isCancelled, serverTrickplayKey == key else { return nil }
+        let fileId = trickplay.fileId
+        let sheets = ServerTrickplaySheets(trickplay) {
+            try? await SiloAPI.shared.watchTrickplay(contentId: contentId, fileId: fileId)
+        }
+        scrubPreviewProvider.serverPreviews = sheets
+        return sheets
     }
 
     private func clearServerTrickplay() {

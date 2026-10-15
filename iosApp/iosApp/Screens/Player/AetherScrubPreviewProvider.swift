@@ -38,6 +38,8 @@ final class AetherScrubPreviewProvider {
         let extractor: FrameExtractor?
         let sessionGeneration: UInt64
         let requestGeneration: UInt64
+        /// Asked again once its sheet arrived; it is not retried again.
+        let isRetry: Bool
     }
 
     private let engine: AetherEngine
@@ -109,6 +111,10 @@ final class AetherScrubPreviewProvider {
     /// indexed by source time; without those, only a server replan can
     /// produce a transport containing them.
     func request(atSourceTime sourceTime: Double) {
+        request(atSourceTime: sourceTime, isRetry: false)
+    }
+
+    private func request(atSourceTime sourceTime: Double, isRetry: Bool) {
         guard sourceTime.isFinite, sourceTime >= 0 else {
             // An invalid target still supersedes whatever was decoding: fence
             // the in-flight result and clear the published preview, or a stale
@@ -138,7 +144,8 @@ final class AetherScrubPreviewProvider {
             playerTime: playerTime,
             extractor: extractor,
             sessionGeneration: sessionGeneration,
-            requestGeneration: requestGeneration
+            requestGeneration: requestGeneration,
+            isRetry: isRetry
         )
         if workerTask == nil {
             workerTask = Task { @MainActor [weak self] in
@@ -199,8 +206,15 @@ final class AetherScrubPreviewProvider {
                     maxWidth: Self.thumbnailWidth
                 )
             }
-            if image == nil {
-                image = await serverPreviews?.thumbnail(atSourceTime: request.sourceTime)
+            if image == nil, let serverPreviews {
+                // On the software path the extractor answers a target in the
+                // stream, so do not hold it for a sheet still downloading.
+                let extractorAnswers = !engine.supportsCacheBackedStills
+                    && request.playerTime != nil && request.extractor != nil
+                image = await serverPreviews.thumbnail(
+                    atSourceTime: request.sourceTime,
+                    waitingForDownload: !extractorAnswers
+                )
             }
             if image == nil, !engine.supportsCacheBackedStills,
                let playerTime = request.playerTime, let extractor = request.extractor {
@@ -215,7 +229,10 @@ final class AetherScrubPreviewProvider {
                 continue
             }
             guard let image else {
-                retryWhenSheetArrives(request)
+                // A target outside the loaded stream must not keep the
+                // previous target's still (see `request(atSourceTime:)`).
+                if request.playerTime == nil { onPreview?(nil) }
+                if !request.isRetry { retryWhenSheetArrives(request) }
                 continue
             }
             onPreview?(Preview(image: image, sourceTime: request.sourceTime))
@@ -223,8 +240,9 @@ final class AetherScrubPreviewProvider {
     }
 
     /// A scrub held still past the buffer gave up on a sheet that was still
-    /// downloading. Ask again for the same target once it arrives, unless a
-    /// newer target or session has replaced it.
+    /// downloading, or that arrived just after. Ask once more for the same
+    /// target when it is held, unless a newer target or session has
+    /// replaced it.
     private func retryWhenSheetArrives(_ request: PendingRequest) {
         guard let sheets = serverPreviews else { return }
         Task { @MainActor [weak self] in
@@ -233,7 +251,7 @@ final class AetherScrubPreviewProvider {
                   self.serverPreviews === sheets,
                   self.sessionGeneration == request.sessionGeneration,
                   self.requestGeneration == request.requestGeneration else { return }
-            self.request(atSourceTime: request.sourceTime)
+            self.request(atSourceTime: request.sourceTime, isRetry: true)
         }
     }
 

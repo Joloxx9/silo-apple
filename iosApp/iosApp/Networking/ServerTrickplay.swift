@@ -1,6 +1,7 @@
 import CoreGraphics
 import Foundation
 import ImageIO
+import Nuke
 
 /// Seek-bar previews the server published for one file: sprite sheets of
 /// thumbnails, one thumbnail per interval of source time. Unlike stills cut
@@ -58,24 +59,34 @@ struct ServerTrickplay: Equatable, Sendable {
     }
 }
 
-/// Fetches one manifest's sheets and cuts thumbnails from them. Sheets are
-/// kept as JPEG data, a few hundred kilobytes each, and only the most recent
-/// one is kept decoded, so a long file does not hold every sheet in memory
-/// as a bitmap.
+/// Fetches one manifest's sheets and cuts thumbnails from them. Sheets load
+/// through the app's artwork pipeline, so they share its disk cache (keyed
+/// without the URL signature) and its local route. They are kept here as
+/// JPEG data, a few hundred kilobytes each, and only the most recent one is
+/// kept decoded, so a long file does not hold every sheet in memory as a
+/// bitmap.
 actor ServerTrickplaySheets {
     /// How long a scrub waits for a sheet that is still downloading before
     /// it gives up on this target; the download carries on for later ones.
     private static let sheetWait: Duration = .seconds(1)
     /// Sheet URLs are renewed this long before the manifest says they expire.
     private static let renewalMargin: TimeInterval = 30
+    /// A sheet that failed to download, and the manifest after a renewal, are
+    /// not requested again for this long, so a scrub over a failing sheet
+    /// does not send a request for every target.
+    private static let retryBackoff: TimeInterval = 30
 
     private var trickplay: ServerTrickplay
     private let renew: @Sendable () async -> ServerTrickplay?
-    private let session: URLSession
     private var data: [Int: Data] = [:]
     private var fetches: [Int: Task<Data?, Never>] = [:]
-    private var renewal: Task<ServerTrickplay?, Never>?
+    private var failedAt: [Int: Date] = [:]
+    private var renewal: Task<Void, Never>?
+    private var renewedAt: Date?
     private var decoded: (sheet: Int, image: CGImage)?
+    /// Bumped when a renewed manifest lays out different thumbnails; work
+    /// started for the old layout is then dropped.
+    private var layout: UInt64 = 0
     private var closed = false
 
     /// `renew` fetches the manifest again, for fresh sheet URLs once these
@@ -83,13 +94,6 @@ actor ServerTrickplaySheets {
     init(_ trickplay: ServerTrickplay, renew: @escaping @Sendable () async -> ServerTrickplay?) {
         self.trickplay = trickplay
         self.renew = renew
-        let config = URLSessionConfiguration.ephemeral
-        config.timeoutIntervalForRequest = 15
-        session = URLSession(configuration: config)
-    }
-
-    deinit {
-        session.invalidateAndCancel()
     }
 
     /// Cancels every download, so closing the player does not wait on them.
@@ -98,7 +102,6 @@ actor ServerTrickplaySheets {
         for fetch in fetches.values { fetch.cancel() }
         fetches = [:]
         renewal?.cancel()
-        session.invalidateAndCancel()
     }
 
     /// Fetches every sheet in order, so a scrub anywhere in the file finds
@@ -107,15 +110,19 @@ actor ServerTrickplaySheets {
     func prefetch() async {
         for sheet in trickplay.sheetURLs.indices {
             if Task.isCancelled || closed { return }
-            _ = await fetch(sheet).value
+            guard data[sheet] == nil, let fetch = fetch(sheet) else { continue }
+            _ = await fetch.value
         }
     }
 
     /// The thumbnail for a source time, or nil when its sheet is not
-    /// available within a short wait.
-    func thumbnail(atSourceTime seconds: Double) async -> CGImage? {
+    /// available. With `waitingForDownload`, a sheet still downloading is
+    /// awaited for a short while; without it, the download is only started.
+    func thumbnail(atSourceTime seconds: Double, waitingForDownload: Bool = true) async -> CGImage? {
+        let layout = layout
         guard let tile = trickplay.tile(atSourceTime: seconds),
-              let image = await sheetImage(tile.sheet) else { return nil }
+              let image = await sheetImage(tile.sheet, waitingForDownload: waitingForDownload),
+              layout == self.layout else { return nil }
         // A sheet is laid out at the manifest's size; scale the cut if the
         // image is not.
         let scale = CGFloat(image.width) / CGFloat(trickplay.columns * trickplay.thumbnailWidth)
@@ -126,9 +133,11 @@ actor ServerTrickplaySheets {
         return image.cropping(to: rect)
     }
 
-    private func sheetImage(_ sheet: Int) async -> CGImage? {
+    private func sheetImage(_ sheet: Int, waitingForDownload: Bool) async -> CGImage? {
         if let decoded, decoded.sheet == sheet { return decoded.image }
-        guard let bytes = await sheetData(sheet),
+        let layout = layout
+        guard let bytes = await sheetData(sheet, waitingForDownload: waitingForDownload),
+              layout == self.layout,
               let source = CGImageSourceCreateWithData(bytes as CFData, nil),
               let image = CGImageSourceCreateImageAtIndex(
                   source, 0, [kCGImageSourceShouldCacheImmediately: true] as CFDictionary
@@ -137,20 +146,22 @@ actor ServerTrickplaySheets {
         return image
     }
 
-    private func sheetData(_ sheet: Int) async -> Data? {
+    private func sheetData(_ sheet: Int, waitingForDownload: Bool) async -> Data? {
         guard !closed, trickplay.sheetURLs.indices.contains(sheet) else { return nil }
         if let bytes = data[sheet] { return bytes }
-        return await Self.value(of: fetch(sheet), within: Self.sheetWait)
+        guard let fetch = fetch(sheet), waitingForDownload else { return nil }
+        return await Self.value(of: fetch, within: Self.sheetWait)
     }
 
-    /// Waits for a sheet that is still downloading, however long it takes,
-    /// and reports whether it is now held. A scrub that gave up on it uses
-    /// this to ask again once it arrives. Without a download in flight there
-    /// is nothing to wait for, so the answer is false.
+    /// Reports whether the sheet for a source time is held, waiting first
+    /// for a download in flight however long it takes. A scrub that gave up
+    /// on the sheet uses this to ask again once it arrives. Without a sheet
+    /// held or downloading, the answer is false.
     func awaitSheet(atSourceTime seconds: Double) async -> Bool {
-        guard let tile = trickplay.tile(atSourceTime: seconds),
-              data[tile.sheet] == nil, let fetch = fetches[tile.sheet] else { return false }
-        _ = await fetch.value
+        guard !closed, let tile = trickplay.tile(atSourceTime: seconds) else { return false }
+        if data[tile.sheet] == nil, let fetch = fetches[tile.sheet] {
+            _ = await fetch.value
+        }
         return !closed && data[tile.sheet] != nil
     }
 
@@ -168,12 +179,24 @@ actor ServerTrickplaySheets {
         }
     }
 
-    private func fetch(_ sheet: Int) -> Task<Data?, Never> {
+    /// The download in flight for a sheet, starting one unless the sheet
+    /// failed within the backoff.
+    private func fetch(_ sheet: Int) -> Task<Data?, Never>? {
         if let fetch = fetches[sheet] { return fetch }
+        if let failed = failedAt[sheet], -failed.timeIntervalSinceNow < Self.retryBackoff { return nil }
+        let layout = layout
         let fetch = Task<Data?, Never> {
             let bytes = await download(sheet)
+            // A layout change replaced `fetches` and the held sheets.
+            guard layout == self.layout else { return nil }
             fetches[sheet] = nil
-            if let bytes, !closed { data[sheet] = bytes }
+            if closed || Task.isCancelled { return bytes }
+            if let bytes {
+                data[sheet] = bytes
+                failedAt[sheet] = nil
+            } else {
+                failedAt[sheet] = Date()
+            }
             return bytes
         }
         fetches[sheet] = fetch
@@ -181,44 +204,70 @@ actor ServerTrickplaySheets {
     }
 
     /// Downloads a sheet, renewing the manifest first when its URLs are
-    /// about to expire, and once more when the server refuses them.
+    /// about to expire and the sheet is not cached, and once more when the
+    /// server refuses them.
     private func download(_ sheet: Int) async -> Data? {
-        if trickplay.expiresAt.timeIntervalSinceNow < Self.renewalMargin {
+        if trickplay.expiresAt.timeIntervalSinceNow < Self.renewalMargin,
+           trickplay.sheetURLs.indices.contains(sheet),
+           !ImagePipeline.shared.cache.containsData(for: ImageRequest(artwork: trickplay.sheetURLs[sheet])) {
             await renewManifest()
         }
         var result = await get(sheet)
-        if result.status == 401 || result.status == 403 {
+        if result.refused {
             await renewManifest()
             result = await get(sheet)
         }
         return result.bytes
     }
 
-    private func get(_ sheet: Int) async -> (bytes: Data?, status: Int) {
-        guard !closed, !Task.isCancelled, trickplay.sheetURLs.indices.contains(sheet),
-              let (bytes, response) = try? await session.data(from: trickplay.sheetURLs[sheet]) else {
-            return (nil, 0)
+    private func get(_ sheet: Int) async -> (bytes: Data?, refused: Bool) {
+        guard !closed, !Task.isCancelled, trickplay.sheetURLs.indices.contains(sheet) else {
+            return (nil, false)
         }
-        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
-        return (status == 200 ? bytes : nil, status)
+        do {
+            return (try await ImagePipeline.shared.data(for: ImageRequest(artwork: trickplay.sheetURLs[sheet])).0, false)
+        } catch ImagePipeline.Error.dataLoadingFailed(let error) {
+            guard case let DataLoader.Error.statusCodeUnacceptable(status) = error else { return (nil, false) }
+            return (nil, status == 401 || status == 403)
+        } catch {
+            return (nil, false)
+        }
     }
 
-    /// Replaces the sheet URLs with a fresh manifest's. Sheets already
-    /// downloaded are kept; concurrent callers share one request.
+    /// Installs a fresh manifest's sheet URLs. Sheets already downloaded are
+    /// kept unless the thumbnails were laid out again. Concurrent callers
+    /// share one request, which installs before any of them resumes; a
+    /// renewal is not repeated within the backoff.
     private func renewManifest() async {
         guard !closed else { return }
         if let renewal {
-            // The download that started this renewal installs its result;
-            // waiters only retry with whatever it installed.
-            _ = await renewal.value
+            await renewal.value
             return
         }
-        let task = Task { [renew] in await renew() }
+        if let renewedAt, -renewedAt.timeIntervalSinceNow < Self.retryBackoff { return }
+        renewedAt = Date()
+        let task = Task { [renew] in
+            let renewed = await renew()
+            install(renewed)
+        }
         renewal = task
-        let renewed = await task.value
+        await task.value
+    }
+
+    private func install(_ renewed: ServerTrickplay?) {
         renewal = nil
-        guard !closed, let renewed, renewed.hasSameLayout(as: trickplay) else { return }
+        guard !closed, let renewed, renewed.fileId == trickplay.fileId else { return }
+        let sameLayout = renewed.hasSameLayout(as: trickplay)
         trickplay = renewed
+        guard !sameLayout else { return }
+        // The file's previews were made again: the sheets held cut the old
+        // thumbnails.
+        layout &+= 1
+        for fetch in fetches.values { fetch.cancel() }
+        fetches = [:]
+        data = [:]
+        failedAt = [:]
+        decoded = nil
     }
 }
 
