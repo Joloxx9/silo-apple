@@ -1164,6 +1164,13 @@ class PlayerViewModel {
 
     private static let autoplayStartSessionTimeout: TimeInterval = 15
     private var lastLoadRequest: LoadRequest?
+    /// The local route the stream on screen was loaded over (`LocalRoute`),
+    /// or nil when it came from the saved address.
+    private var streamLocalRoute: LocalRoute?
+    /// Whether the load the engine just abandoned was to play when ready, as
+    /// it stood then: Play or Pause may have changed it during the load, and
+    /// tearing the load down clears it from the controller.
+    private var abandonedLoadPlayIntent: Bool?
     private static let nextUpCountdownDefaultSeconds = 10
     private static let nextUpHUDCountdownThresholdSeconds: Double = 100
     private static let nearEndPlaybackErrorThresholdSeconds: Double = 8
@@ -3516,6 +3523,9 @@ class PlayerViewModel {
         )
     }
 
+    /// Loads `prepared` into the engine. A load on the local route that could
+    /// not reach its source drops the route and opens the same plan once more
+    /// from the saved address, before the failure counts against the plan.
     private func loadAether(
         prepared: PreparedPlayback,
         streamRequest: StreamRequest,
@@ -3524,7 +3534,47 @@ class PlayerViewModel {
         reselectsPlanSubtitle: Bool = false,
         shouldPlayWhenReady: Bool
     ) async throws {
+        do {
+            try await loadAetherSource(
+                prepared: prepared, streamRequest: streamRequest,
+                expectedStreamLoadGeneration: expectedStreamLoadGeneration,
+                resumeSourcePosition: resumeSourcePosition, reselectsPlanSubtitle: reselectsPlanSubtitle,
+                shouldPlayWhenReady: shouldPlayWhenReady, takesLocalRoute: true)
+        } catch {
+            guard let route = streamLocalRoute, !Task.isCancelled, Self.isLocalRouteLoadFailure(error) else { throw error }
+            LocalRouteController.reportFailure(of: route)
+            try await loadAetherSource(
+                prepared: prepared, streamRequest: streamRequest,
+                expectedStreamLoadGeneration: expectedStreamLoadGeneration,
+                resumeSourcePosition: resumeSourcePosition, reselectsPlanSubtitle: reselectsPlanSubtitle,
+                shouldPlayWhenReady: abandonedLoadPlayIntent ?? shouldPlayWhenReady, takesLocalRoute: false)
+        }
+    }
+
+    /// Whether a load failed to reach its source, as one over a local route
+    /// that stopped working does: the connection failed, or the source
+    /// presented a key the pin refused. A failure about what the source sent,
+    /// such as an HTTP status or unreadable media, leaves the route alone.
+    static func isLocalRouteLoadFailure(_ error: Error) -> Bool {
+        guard let load = error as? AetherPlaybackController.LoadFailure else {
+            return LocalRoute.isRouteFailure(error)
+        }
+        return load.failure.kind == .sourceCertificateRejected
+            || PlaybackReconnectPolicy.isConnectionLoss(load.failure, serverUnreachable: false)
+    }
+
+    private func loadAetherSource(
+        prepared: PreparedPlayback,
+        streamRequest: StreamRequest,
+        expectedStreamLoadGeneration: UInt64,
+        resumeSourcePosition: Double?,
+        reselectsPlanSubtitle: Bool,
+        shouldPlayWhenReady: Bool,
+        takesLocalRoute: Bool
+    ) async throws {
         try requireCurrentStreamLoad(expectedStreamLoadGeneration)
+        streamLocalRoute = nil
+        abandonedLoadPlayIntent = nil
         let preferredSubtitles = subtitleOrderingLanguage.map { [$0] } ?? []
         let preferredAudio = AetherInitialAudioPreference.languages(
             selectedOrdinal: prepared.protocolV3?.plan.selectedTracks.audio?.index,
@@ -3571,6 +3621,20 @@ class PlayerViewModel {
         )
         let spec: AetherLoadSpec
         if let v3 = prepared.protocolV3 {
+            let resolvesRequestCredentials = v3.serverFeatures.contains(PlaybackProtocolV3.headerAuthenticatedMediaFeature)
+                && AetherAuthenticationRecoveryPolicy.resolvesRequestCredentials(
+                    delivery: v3.plan.delivery,
+                    hasVideo: v3.plan.effectiveRecipe.videoCodec != nil
+                )
+            // The media takes the local route only where each request's
+            // credentials are refreshed and scoped to the origin it is on (the
+            // authorization below), which is also what lets the engine reach a
+            // pinned origin. A Watch Party stays on the saved address, which it
+            // can always remount from.
+            let streamRequest = takesLocalRoute && resolvesRequestCredentials && !isWatchPartyPlayback
+                ? streamRequest.routed(over: LocalRoute.active)
+                : streamRequest
+            streamLocalRoute = streamRequest.localRoute
             let audioSourceStreamIndex: Int32?
             let selectedAudioOrdinal = v3.plan.selectedTracks.audio?.index
             let catalogAudioTracks = prepared.selectedVersion.audioTracks ?? []
@@ -3606,17 +3670,14 @@ class PlayerViewModel {
             }
             let requestAuthorization: HTTPRequestAuthorization?
             let subtitleRequestAuthorization: HTTPRequestAuthorization?
-            if v3.serverFeatures.contains(PlaybackProtocolV3.headerAuthenticatedMediaFeature),
-               AetherAuthenticationRecoveryPolicy.resolvesRequestCredentials(
-                   delivery: v3.plan.delivery,
-                   hasVideo: v3.plan.effectiveRecipe.videoCodec != nil
-               ) {
+            if resolvesRequestCredentials {
                 guard let owner = streamRequest.capturedAuth else {
                     throw HTTPError.requestIdentityChanged
                 }
                 requestAuthorization = try PlaybackMediaAuthorization.make(
                     sourceURL: streamRequest.url,
                     serverURL: streamRequest.serverUrl,
+                    transportServerURL: streamRequest.localRoute?.localOrigin,
                     sessionID: prepared.session.sessionId,
                     expectedAuth: owner,
                     baseHeaders: streamRequest.headers,
@@ -3774,6 +3835,7 @@ class PlayerViewModel {
                 // The engine, not the app, abandoned this load. Nobody else
                 // will tear the source down, and the load's own catch is about
                 // to retire its server session.
+                abandonedLoadPlayIntent = aetherPlaybackController.shouldPlayWhenReady
                 disposeAetherPlayback()
             }
             throw resolved
@@ -5585,10 +5647,15 @@ class PlayerViewModel {
         sourceWatch.playhead(currentTime: currentTime)
     }
 
-    /// The app's own requests could not reach the server either.
+    /// The app's own requests could not reach the server either, or the
+    /// stream came over the local route, whose address stops leading to the
+    /// server once the device leaves the network. A stream on the local route
+    /// that dies is therefore reconnected first; the reconnect drops the
+    /// route and loads from the saved address, where a genuine failure meets
+    /// the ordinary recovery.
     private var isServerUnreachable: Bool {
         let monitor = ConnectionMonitor.shared
-        return !monitor.isDeviceOnline || monitor.serverStatus == .unreachable
+        return !monitor.isDeviceOnline || monitor.serverStatus == .unreachable || streamLocalRoute != nil
     }
 
     /// Starts a reconnect, or joins the one already running. Returns false
@@ -5606,6 +5673,9 @@ class PlayerViewModel {
             return false
         }
         if reconnectCycle.isActive { return true }
+        if let streamLocalRoute {
+            LocalRouteController.reportFailure(of: streamLocalRoute)
+        }
         // Taken while the viewer's selection is still published. After a
         // give-up the session is torn down, so Try again reuses it.
         if activePreparedProtocolV3 != nil || reconnectLoadRequest == nil {
