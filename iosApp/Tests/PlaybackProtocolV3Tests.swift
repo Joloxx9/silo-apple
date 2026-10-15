@@ -1668,14 +1668,17 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         XCTAssertTrue(WatchPartyPlaybackAction.seek(10).isPermitted(canPlayPause: true, canSeek: true))
     }
 
-    func testWatchPartySmallCorrectionConvergesByRate() {
-        XCTAssertEqual(WatchPartyCorrection.resolve(drift: 0.3), .none)
-        XCTAssertEqual(WatchPartyCorrection.resolve(drift: 1), .rate(1.125))
-        XCTAssertEqual(WatchPartyCorrection.resolve(drift: 2), .rate(WatchPartyCorrection.maxRate))
-        XCTAssertEqual(WatchPartyCorrection.resolve(drift: -1.2), .rate(WatchPartyCorrection.minRate))
-        XCTAssertEqual(WatchPartyCorrection.resolve(drift: 3), .seek)
-        XCTAssertEqual(WatchPartyCorrection.resolve(drift: -3), .seek)
-        XCTAssertEqual(WatchPartyCorrection.resolve(drift: .nan), .none)
+    func testWatchPartyDriftBelowTheHardSeekBandConvergesByRate() {
+        XCTAssertFalse(WatchPartyCorrection.seeks(drift: .nan))
+        for drift in [0.3, 0.5, 1, 3, 4.9, -0.5, -2, -4.9] {
+            XCTAssertFalse(WatchPartyCorrection.seeks(drift: drift), "drift \(drift) seeked")
+        }
+        for drift in [0.5, 1, 3, 4.9, -0.5, -2, -4.9] {
+            let rate = WatchPartyCorrection.nudge(drift: drift, currentRate: 1)
+            XCTAssertEqual(rate > 1, drift > 0, "drift \(drift) moved the wrong way at \(rate)")
+        }
+        XCTAssertTrue(WatchPartyCorrection.seeks(drift: 5.1))
+        XCTAssertTrue(WatchPartyCorrection.seeks(drift: -5.1))
     }
 
     func testWatchPartyScrubResumeIsPartOfTheSeekRequest() {
@@ -1688,7 +1691,7 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         ))
         adapter.canSeek = true
         var requests: [(WatchPartyPlaybackAction, Bool)] = []
-        adapter.onUserTransport = { action, _, paused in requests.append((action, paused)) }
+        adapter.onUserTransport = { action, _, paused in requests.append((action, paused)); return true }
         player.duration = 100
         player.beginScrub(fraction: 0.5)
         player.endScrub(resumePlayback: true)
@@ -1696,6 +1699,98 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         XCTAssertEqual(requests.first?.0, .seek(50))
         XCTAssertEqual(requests.first?.1, false)
         XCTAssertFalse(player.isScrubbing)
+    }
+
+    func testWatchPartySeekRequestHoldsItsTargetAndSkipsBuildOnIt() async throws {
+        let player = PlayerViewModel()
+        let adapter = WatchPartyPlaybackAdapter(player: player)
+        defer { adapter.stop() }
+        adapter.prepare(WatchPartyPlaybackContext(
+            roomId: "room", selectionRevision: 1, contentId: "movie",
+            fileId: 42, libraryId: nil, startPosition: 0
+        ))
+        adapter.canSeek = true
+        var seeks: [WatchPartyPlaybackAction] = []
+        adapter.onUserTransport = { action, _, _ in seeks.append(action); return true }
+        player.currentTime = 23
+        player.duration = 600
+        // The room runs the seek a lead later; the timeline holds the target.
+        player.seekTo(seconds: 50)
+        XCTAssertEqual(seeks, [.seek(50)])
+        XCTAssertEqual(player.currentTime, 50)
+        // A skip pressed before the room's seek arrives builds on the target,
+        // not on the position the room is about to move away from.
+        player.skipForward(10)
+        try await Task.sleep(for: .milliseconds(400))
+        XCTAssertEqual(seeks, [.seek(50), .seek(60)])
+        XCTAssertEqual(player.currentTime, 60)
+        // Progress saves where the engine plays, not a target the room has
+        // not run and may never run.
+        XCTAssertEqual(player.progressReportPosition, player.watchPartyPlaybackSnapshot.sourceTime)
+        XCTAssertNotEqual(player.progressReportPosition, 60)
+    }
+
+    func testWatchPartyHeldSeekEndsWhenItsRoomSeekIsReplacedOrTheConnectionDrops() {
+        let player = PlayerViewModel()
+        let adapter = WatchPartyPlaybackAdapter(player: player)
+        defer { adapter.stop() }
+        adapter.prepare(WatchPartyPlaybackContext(
+            roomId: "room", selectionRevision: 1, contentId: "movie",
+            fileId: 42, libraryId: nil, startPosition: 0
+        ))
+        adapter.canSeek = true
+        adapter.onUserTransport = { _, _, _ in true }
+        player.currentTime = 23
+        player.duration = 600
+        let engine = player.watchPartyPlaybackSnapshot.sourceTime
+        player.seekTo(seconds: 50)
+        XCTAssertEqual(player.currentTime, 50)
+        // A correction the room sent before its seek leaves the request held,
+        // and so does the room's seek for an earlier skip in a burst.
+        adapter.roomCommandStarts(seekingTo: nil)
+        adapter.roomSeekArrived(at: 30)
+        adapter.roomCommandStarts(seekingTo: 30)
+        adapter.roomCommandStarts(seekingTo: nil)
+        XCTAssertEqual(player.currentTime, 50)
+        // The room's seek to 50 arrives. When it runs it answers the request.
+        adapter.roomSeekArrived(at: 50)
+        adapter.roomCommandStarts(seekingTo: 50)
+        XCTAssertEqual(player.currentTime, 50)
+        // The host pauses before that seek runs: the pause replaces it, so
+        // the seek never runs here and the timeline returns to the engine.
+        adapter.roomCommandStarts(seekingTo: nil)
+        XCTAssertEqual(player.currentTime, engine)
+        XCTAssertEqual(player.progressReportPosition, engine)
+        // A lost connection releases a held request too.
+        player.seekTo(seconds: 80)
+        XCTAssertEqual(player.currentTime, 80)
+        adapter.releaseHeldSeek()
+        XCTAssertEqual(player.currentTime, engine)
+    }
+
+    func testWatchPartySeekRequestTheSessionDropsDoesNotHoldTheTimeline() async throws {
+        let player = PlayerViewModel()
+        let adapter = WatchPartyPlaybackAdapter(player: player)
+        defer { adapter.stop() }
+        adapter.prepare(WatchPartyPlaybackContext(
+            roomId: "room", selectionRevision: 1, contentId: "movie",
+            fileId: 42, libraryId: nil, startPosition: 0
+        ))
+        adapter.canSeek = true
+        var seeks: [WatchPartyPlaybackAction] = []
+        // Disconnected or not attached yet: the session drops the request.
+        adapter.onUserTransport = { action, _, _ in seeks.append(action); return false }
+        player.currentTime = 23
+        player.duration = 600
+        XCTAssertEqual(adapter.submit(.seek(40)), .dropped)
+        player.seekTo(seconds: 50)
+        XCTAssertEqual(player.currentTime, 23)
+        XCTAssertEqual(player.progressReportPosition, 23)
+        // The next skip builds on the engine's position, not the dropped target.
+        player.skipForward(10)
+        try await Task.sleep(for: .milliseconds(400))
+        XCTAssertEqual(seeks, [.seek(40), .seek(50), .seek(33)])
+        XCTAssertEqual(player.currentTime, 23)
     }
 
     func testWatchPartyGuestSeekCannotMutateLocalPlayhead() {
@@ -1709,7 +1804,7 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         player.currentTime = 23
         player.duration = 100
         var requests = 0
-        adapter.onUserTransport = { _, _, _ in requests += 1 }
+        adapter.onUserTransport = { _, _, _ in requests += 1; return true }
         player.seekTo(seconds: 50)
         player.beginHoldSeek(forward: true)
         XCTAssertEqual(player.currentTime, 23)

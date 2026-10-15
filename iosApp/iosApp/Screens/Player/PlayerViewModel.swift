@@ -82,8 +82,9 @@ enum RecapAutoSkipPolicy {
     }
 }
 
-/// What the up-next screen offers: the series' next episode, or a shuffle's
-/// next pick, which may be a movie.
+/// What the up-next screen offers: the series' next episode, a shuffle's
+/// next pick, which may be a movie, or, when neither exists, the first On
+/// Deck item.
 struct PlayerNextUpEpisode: Identifiable, Hashable {
     let contentId: String
     let seriesId: String?
@@ -101,6 +102,9 @@ struct PlayerNextUpEpisode: Identifiable, Hashable {
     /// The profile's watch state for the next episode, so the Up Next screen
     /// can apply spoiler protection.
     let watchState: EpisodeWatchState
+    /// Taken from On Deck because the current item has no successor. It may
+    /// be another title in another library.
+    var isFromOnDeck = false
 
     var id: String { contentId }
     var episodeLabel: String? { isEpisode ? "S\(seasonNumber):E\(episodeNumber)" : nil }
@@ -144,6 +148,25 @@ struct PlayerNextUpEpisode: Identifiable, Hashable {
         airDate = item.releaseDate
         // Shuffle picks carry no watch state, so an episode reads as untouched.
         watchState = EpisodeWatchState(played: false)
+    }
+
+    init(onDeckItem item: PlayerOnDeckItem) {
+        let section = item.sectionItem
+        isFromOnDeck = true
+        contentId = item.contentId
+        isEpisode = section.isEpisodeItem
+        seriesId = isEpisode ? section.seriesId : nil
+        seriesTitle = isEpisode ? section.seriesTitle : nil
+        seasonNumber = section.seasonNumber ?? 0
+        episodeNumber = section.episodeNumber ?? 0
+        let trimmedTitle = section.title.trimmingCharacters(in: .whitespacesAndNewlines)
+        title = trimmedTitle.isEmpty && isEpisode ? "Episode \(episodeNumber)" : trimmedTitle
+        overview = section.overview
+        runtime = section.runtime
+        stillUrl = item.artworkUrl
+        stillThumbhash = item.artworkThumbhash
+        airDate = nil
+        watchState = EpisodeWatchState(sectionItem: section)
     }
 }
 
@@ -895,6 +918,12 @@ class PlayerViewModel {
     /// stream is a lost connection and where a reconnect resumes.
     @ObservationIgnored
     private var sourceWatch = PlaybackSourceWatch()
+    /// Where the last reconnect after an early end of stream resumed, until a
+    /// load or replan other than a reconnect starts. A server-produced stream
+    /// that ends there again is ending where its media does
+    /// (`PlaybackReconnectPolicy.endOfStreamReconnectPosition`).
+    @ObservationIgnored
+    private var lastEndReconnect: Double?
     /// Set when the latest end of stream came short of the end of the item.
     /// Such an end never finishes the item: no watched state, no completed
     /// progress report.
@@ -937,6 +966,15 @@ class PlayerViewModel {
     /// scrubber to the optimistic target forever.
     private var seekOriginTime: Double?
     private var seekTargetTime: Double?
+    /// This member's newest room seek request the room has not run yet; see
+    /// `WatchPartyHeldSeek`.
+    private var watchPartyHeldSeek: WatchPartyHeldSeek?
+    /// The position progress reports save. A held room seek request is on
+    /// the timeline before the room runs it, and may never run; until it
+    /// does, the engine has not moved, so the resume point stays there.
+    var progressReportPosition: Double {
+        watchPartyHeldSeek == nil ? currentTime : watchPartyPlaybackSnapshot.sourceTime
+    }
     private var seekFilterTimeoutTask: Task<Void, Never>?
     /// The in-flight `commitSeek` await. Held so a new load can cancel a seek
     /// whose `.requiresReplan` answer would otherwise arrive after the item
@@ -1038,10 +1076,12 @@ class PlayerViewModel {
     private var activePlaybackSessionId: String?
     var watchPartyAdapter: WatchPartyPlaybackAdapter?
     private var watchPartyLocalPreparation = false
+    /// The rate a party member should play at: 1, or a correction nudge.
     private var watchPartyCorrectionRate: Double = 1
-    /// An active rate catch-up: the room target it converges on and when that
-    /// target was taken. The room advances at 1x from then.
-    private var watchPartyCatchup: (target: Double, startedAt: Date)?
+    /// The rate last handed to Aether, or nil when unknown. Aether starts
+    /// playback on any nonzero rate, so the rate only reaches it while it
+    /// plays; a paused member picks the rate up when it next plays.
+    private var watchPartyAppliedRate: Double?
     private var watchPartyReloadBudget = WatchPartyReloadBudget()
     var isWatchPartyPlayback: Bool { watchPartyAdapter?.context != nil }
     var canRequestPlayPause: Bool { !isWatchPartyPlayback || watchPartyAdapter?.canPlayPause == true }
@@ -1216,6 +1256,13 @@ class PlayerViewModel {
 
     private static let autoplayStartSessionTimeout: TimeInterval = 15
     private var lastLoadRequest: LoadRequest?
+    /// The local route the stream on screen was loaded over (`LocalRoute`),
+    /// or nil when it came from the saved address.
+    private var streamLocalRoute: LocalRoute?
+    /// Whether the load the engine just abandoned was to play when ready, as
+    /// it stood then: Play or Pause may have changed it during the load, and
+    /// tearing the load down clears it from the controller.
+    private var abandonedLoadPlayIntent: Bool?
     private static let nextUpCountdownDefaultSeconds = 10
     private static let nextUpHUDCountdownThresholdSeconds: Double = 100
     private static let nearEndPlaybackErrorThresholdSeconds: Double = 8
@@ -1434,7 +1481,7 @@ class PlayerViewModel {
             return
         }
         guard activePlaybackSessionId != nil else { return }
-        let position = currentTime
+        let position = progressReportPosition
         guard position.isFinite, position >= 0 else { return }
         let isPaused = !isPlaying
         Self.logger.debug("Flushing playback progress (\(reason, privacy: .public))")
@@ -1512,6 +1559,18 @@ class PlayerViewModel {
             switch state {
             case .playing:
                 isPlaying = true
+                // A rate the party set while the engine rebuffered applies as
+                // soon as it plays again, not at the next clock update. The
+                // engine publishes this state from `willSet`, so it still
+                // reads the old one here; hand the rate over once it is set.
+                if isWatchPartyPlayback {
+                    let epoch = scopedEvent.epoch
+                    Task { @MainActor [weak self] in
+                        await Task.yield()
+                        guard let self, self.activeAetherLoadEpoch == epoch else { return }
+                        self.syncWatchPartyRate()
+                    }
+                }
                 pushNowPlayingSnapshot()
                 // An audio-only load has no picture, so Aether's audio route
                 // never latches `hasFirstFrameReadyForDisplay` and the
@@ -1566,7 +1625,10 @@ class PlayerViewModel {
                 return
             }
             if let origin = seekOriginTime, let target = seekTargetTime {
-                if abs(movieTime - origin) < abs(movieTime - target) {
+                // A held room request is released by the room's seek to it,
+                // not by ticks: playback from an earlier room seek in the
+                // burst can cross the midpoint before that seek arrives.
+                if watchPartyHeldSeek != nil || Self.isStaleSeekTick(movieTime, origin: origin, target: target) {
                     pushNowPlayingIfDue()
                     return
                 }
@@ -2376,6 +2438,11 @@ class PlayerViewModel {
             && (resolvedOperation == PlaybackProtocolV3.ReplanOperation.failureRecovery
                 || resolvedOperation == PlaybackProtocolV3.ReplanOperation.seekReanchor)
         let playIntentAtRequest = aetherPlaybackController.shouldPlayWhenReady
+        // A quality, track or seek replan is a fresh look at the stream; only
+        // the reconnect's own replan keeps where the last one resumed.
+        if classification != PlaybackReconnectPolicy.classification {
+            lastEndReconnect = nil
+        }
         progressTask?.cancel()
         isLoading = true
         isBuffering = false
@@ -2760,6 +2827,7 @@ class PlayerViewModel {
               let seriesId = detail.seriesId,
               let seasonNumber = detail.seasonNumber,
               let episodeNumber = detail.episodeNumber else {
+            offerOnDeckItemIfNothingNext()
             return
         }
 
@@ -2784,6 +2852,7 @@ class PlayerViewModel {
                 self.nextUpEpisode = episode
                 self.isLoadingNextUpEpisode = false
                 self.nextUpLookupError = nil
+                if episode == nil && self.offerOnDeckItemIfNothingNext() { return }
                 if self.showNextUpScreen {
                     self.startNextUpCountdownIfNeeded()
                 } else {
@@ -2822,8 +2891,13 @@ class PlayerViewModel {
                 guard !Task.isCancelled, !self.isDisposed else { return }
                 guard isCurrentOwner else { throw HTTPError.requestIdentityChanged }
                 let response = read.response
-                self.nextUpOnDeckItems = await self.resolveOnDeckItems(from: response, currentDetail: detail)
+                let items = await self.resolveOnDeckItems(from: response, currentDetail: detail)
+                // A newer load cancels this task; its items would become that
+                // load's Up Next pick.
+                guard !Task.isCancelled, !self.isDisposed else { return }
+                self.nextUpOnDeckItems = items
                 self.isLoadingNextUpOnDeck = false
+                if self.offerOnDeckItemIfNothingNext() { return }
                 self.updateNextUpPresentation(for: self.currentTime)
             } catch {
                 guard !Task.isCancelled, !self.isDisposed else { return }
@@ -2831,6 +2905,34 @@ class PlayerViewModel {
                 self.isLoadingNextUpOnDeck = false
             }
         }
+    }
+
+    /// With no next episode, the first On Deck item is up next, so playback
+    /// carries on into what the profile is watching elsewhere instead of
+    /// stopping at the end. A failed episode lookup offers nothing: the
+    /// series may still have a next episode. Returns whether it offered one.
+    @discardableResult
+    private func offerOnDeckItemIfNothingNext() -> Bool {
+        #if os(macOS)
+        // macOS has no Up Next screen, so the pick would start another title
+        // with no countdown on screen and no way to cancel it.
+        return false
+        #else
+        guard !isWatchPartyPlayback,
+              shuffleState == nil,
+              nextUpEpisode == nil,
+              !isLoadingNextUpEpisode,
+              nextUpLookupError == nil,
+              !isStartingNextUp,
+              let item = nextUpCarouselItems.first else { return false }
+        nextUpEpisode = PlayerNextUpEpisode(onDeckItem: item)
+        if showNextUpScreen {
+            startNextUpCountdownIfNeeded()
+        } else {
+            updateNextUpPresentation(for: currentTime)
+        }
+        return true
+        #endif
     }
 
     private func resolveOnDeckItems(
@@ -3258,8 +3360,12 @@ class PlayerViewModel {
             preferredSidecarSubtitleTrackId: nil,
             startFromBeginning: false
         )
-        request.libraryId = libraryId
-        request.preferredQualityOverride = nextEpisodeQualityOverride
+        // An On Deck pick is another title, often in another library; it
+        // starts like a tap on its card.
+        if nextUpEpisode?.isFromOnDeck != true {
+            request.libraryId = libraryId
+            request.preferredQualityOverride = nextEpisodeQualityOverride
+        }
         beginFreshLoad(
             request: request,
             progressPosition: completionProgressPositionForCurrentItem(),
@@ -3511,7 +3617,7 @@ class PlayerViewModel {
         PlayerNextUpCompletionPolicy.progressPosition(
             isNextUpPresented: showNextUpScreen,
             hasReachedEndOfFile: finishedAtEndOfFile,
-            currentTime: currentTime,
+            currentTime: progressReportPosition,
             duration: duration,
             promptSeconds: settings.nextUpPromptSeconds,
             skippedCredits: skippedCreditsToEnd
@@ -3557,17 +3663,23 @@ class PlayerViewModel {
         }
         // The player closed while the next episode was still loading. Autoplay
         // keeps that episode's season in `nextUpEpisode`; otherwise assume the
-        // previous episode's season.
-        guard let loadingId = lastLoadRequest?.contentId, let lastSeriesPlayback else { return nil }
+        // previous episode's season. An On Deck pick belongs to its own
+        // series, or to none, not to the one that just finished.
+        guard let loadingId = lastLoadRequest?.contentId else { return nil }
         let queued = nextUpEpisode?.contentId == loadingId ? nextUpEpisode : nil
+        let seriesId = queued?.isFromOnDeck == true ? queued?.seriesId : lastSeriesPlayback?.seriesId
+        guard let seriesId = Self.nonEmpty(seriesId) else { return nil }
         return SeriesPlaybackReturn(
             episodeContentId: loadingId,
-            seriesContentId: lastSeriesPlayback.seriesId,
-            seasonNumber: queued?.seasonNumber ?? lastSeriesPlayback.seasonNumber,
+            seriesContentId: seriesId,
+            seasonNumber: queued?.seasonNumber ?? lastSeriesPlayback?.seasonNumber,
             completed: false
         )
     }
 
+    /// Loads `prepared` into the engine. A load on the local route that could
+    /// not reach its source drops the route and opens the same plan once more
+    /// from the saved address, before the failure counts against the plan.
     private func loadAether(
         prepared: PreparedPlayback,
         streamRequest: StreamRequest,
@@ -3576,7 +3688,47 @@ class PlayerViewModel {
         reselectsPlanSubtitle: Bool = false,
         shouldPlayWhenReady: Bool
     ) async throws {
+        do {
+            try await loadAetherSource(
+                prepared: prepared, streamRequest: streamRequest,
+                expectedStreamLoadGeneration: expectedStreamLoadGeneration,
+                resumeSourcePosition: resumeSourcePosition, reselectsPlanSubtitle: reselectsPlanSubtitle,
+                shouldPlayWhenReady: shouldPlayWhenReady, takesLocalRoute: true)
+        } catch {
+            guard let route = streamLocalRoute, !Task.isCancelled, Self.isLocalRouteLoadFailure(error) else { throw error }
+            LocalRouteController.reportFailure(of: route)
+            try await loadAetherSource(
+                prepared: prepared, streamRequest: streamRequest,
+                expectedStreamLoadGeneration: expectedStreamLoadGeneration,
+                resumeSourcePosition: resumeSourcePosition, reselectsPlanSubtitle: reselectsPlanSubtitle,
+                shouldPlayWhenReady: abandonedLoadPlayIntent ?? shouldPlayWhenReady, takesLocalRoute: false)
+        }
+    }
+
+    /// Whether a load failed to reach its source, as one over a local route
+    /// that stopped working does: the connection failed, or the source
+    /// presented a key the pin refused. A failure about what the source sent,
+    /// such as an HTTP status or unreadable media, leaves the route alone.
+    static func isLocalRouteLoadFailure(_ error: Error) -> Bool {
+        guard let load = error as? AetherPlaybackController.LoadFailure else {
+            return LocalRoute.isRouteFailure(error)
+        }
+        return load.failure.kind == .sourceCertificateRejected
+            || PlaybackReconnectPolicy.isConnectionLoss(load.failure, serverUnreachable: false)
+    }
+
+    private func loadAetherSource(
+        prepared: PreparedPlayback,
+        streamRequest: StreamRequest,
+        expectedStreamLoadGeneration: UInt64,
+        resumeSourcePosition: Double?,
+        reselectsPlanSubtitle: Bool,
+        shouldPlayWhenReady: Bool,
+        takesLocalRoute: Bool
+    ) async throws {
         try requireCurrentStreamLoad(expectedStreamLoadGeneration)
+        streamLocalRoute = nil
+        abandonedLoadPlayIntent = nil
         let preferredSubtitles = subtitleOrderingLanguage.map { [$0] } ?? []
         let preferredAudio = AetherInitialAudioPreference.languages(
             selectedOrdinal: prepared.protocolV3?.plan.selectedTracks.audio?.index,
@@ -3623,6 +3775,20 @@ class PlayerViewModel {
         )
         let spec: AetherLoadSpec
         if let v3 = prepared.protocolV3 {
+            let resolvesRequestCredentials = v3.serverFeatures.contains(PlaybackProtocolV3.headerAuthenticatedMediaFeature)
+                && AetherAuthenticationRecoveryPolicy.resolvesRequestCredentials(
+                    delivery: v3.plan.delivery,
+                    hasVideo: v3.plan.effectiveRecipe.videoCodec != nil
+                )
+            // The media takes the local route only where each request's
+            // credentials are refreshed and scoped to the origin it is on (the
+            // authorization below), which is also what lets the engine reach a
+            // pinned origin. A Watch Party stays on the saved address, which it
+            // can always remount from.
+            let streamRequest = takesLocalRoute && resolvesRequestCredentials && !isWatchPartyPlayback
+                ? streamRequest.routed(over: LocalRoute.active)
+                : streamRequest
+            streamLocalRoute = streamRequest.localRoute
             let audioSourceStreamIndex: Int32?
             let selectedAudioOrdinal = v3.plan.selectedTracks.audio?.index
             let catalogAudioTracks = prepared.selectedVersion.audioTracks ?? []
@@ -3658,17 +3824,14 @@ class PlayerViewModel {
             }
             let requestAuthorization: HTTPRequestAuthorization?
             let subtitleRequestAuthorization: HTTPRequestAuthorization?
-            if v3.serverFeatures.contains(PlaybackProtocolV3.headerAuthenticatedMediaFeature),
-               AetherAuthenticationRecoveryPolicy.resolvesRequestCredentials(
-                   delivery: v3.plan.delivery,
-                   hasVideo: v3.plan.effectiveRecipe.videoCodec != nil
-               ) {
+            if resolvesRequestCredentials {
                 guard let owner = streamRequest.capturedAuth else {
                     throw HTTPError.requestIdentityChanged
                 }
                 requestAuthorization = try PlaybackMediaAuthorization.make(
                     sourceURL: streamRequest.url,
                     serverURL: streamRequest.serverUrl,
+                    transportServerURL: streamRequest.localRoute?.localOrigin,
                     sessionID: prepared.session.sessionId,
                     expectedAuth: owner,
                     baseHeaders: streamRequest.headers,
@@ -3794,6 +3957,9 @@ class PlayerViewModel {
             shouldPlayWhenReady: shouldPlayWhenReady
         )
         activeAetherLoadEpoch = loadEpoch
+        // Aether keeps a speed only across a reload of the same source, so a
+        // party member's rate is handed over again once this load plays.
+        watchPartyAppliedRate = nil
         // A progressive remux opens at its stream origin, behind the position
         // the caller just published. Clock updates earlier than `currentTime`
         // are dropped as stale, so move it back to where the engine starts or
@@ -3826,6 +3992,7 @@ class PlayerViewModel {
                 // The engine, not the app, abandoned this load. Nobody else
                 // will tear the source down, and the load's own catch is about
                 // to retire its server session.
+                abandonedLoadPlayIntent = aetherPlaybackController.shouldPlayWhenReady
                 disposeAetherPlayback()
             }
             throw resolved
@@ -4198,7 +4365,9 @@ class PlayerViewModel {
     }
 
     func applySettingsToPlayer() {
-        aetherPlaybackController.setSpeed(effectivePlaybackSpeed)
+        // Aether starts a paused player on any rate; a party member's rate is
+        // the room's to set, and only while it plays.
+        if isWatchPartyPlayback { syncWatchPartyRate() } else { aetherPlaybackController.setSpeed(effectivePlaybackSpeed) }
         aetherPlaybackController.engine.videoGravity = settings.videoGravity.avGravity
     }
 
@@ -4363,8 +4532,10 @@ class PlayerViewModel {
 
     /// Called when the active backend reports natural EOF. Move the shell into
     /// a paused end-state immediately so the player does not look frozen if
-    /// auto-play-next is unavailable.
-    func handleEndOfFile() {
+    /// auto-play-next is unavailable. `sourceEnded` is false when the player
+    /// finishes the item itself, as a credits skip that runs to the end does:
+    /// nothing was lost, so it never reconnects.
+    func handleEndOfFile(sourceEnded: Bool = true) {
         // Once per load. Two callers can land here for the same end — the
         // `.ended` event and a near-end playback error reclassified as a
         // natural finish — and running twice would raise the Next Up postroll
@@ -4379,24 +4550,30 @@ class PlayerViewModel {
 
         // Aether reports a source that stopped delivering as an ordinary end
         // of stream once its reader gives up, for example after a seek past
-        // the buffer while the server is down. Short of the end, that is a
-        // lost connection, not the item finishing (§6.2): reconnect at the
-        // position the stream last played from, and neither finish the item
-        // nor start the next one.
-        if currentTransportHasShownFrame,
+        // the buffer while the server is down. A remux or transcode whose
+        // session the server lost (a restart) can end cleanly with no stall
+        // at all. Short of the end, either is a lost connection, not the item
+        // finishing (§6.2): reconnect at the position the stream last played
+        // from, and neither finish the item nor start the next one. The
+        // reconnect carries the viewer's pause and is bounded by its own
+        // attempt budget.
+        if sourceEnded,
+           currentTransportHasShownFrame,
            let position = PlaybackReconnectPolicy.endOfStreamReconnectPosition(
                playhead: sourcePlayhead,
                duration: duration,
                sourceStalled: sourceWatch.isStalled,
-               serverUnreachable: isServerUnreachable
-           ) {
+               serverUnreachable: isServerUnreachable,
+               delivery: aetherPlaybackController.activeSpec?.delivery,
+               lastEndReconnect: lastEndReconnect
+           ),
+           beginReconnect(position: position, resume: aetherPlaybackController.shouldPlayWhenReady) {
             Self.logger.warning(
-                "[CMP] handleEndOfFile: source ended short of the end at \(position, privacy: .public)/\(self.duration, privacy: .public) clock=\(self.currentTime, privacy: .public); treating as a lost connection"
+                "[CMP] handleEndOfFile: source ended short of the end at \(position, privacy: .public)/\(self.duration, privacy: .public) clock=\(self.currentTime, privacy: .public) route=\(self.activeRouteLabel, privacy: .public) stalled=\(self.sourceWatch.isStalled, privacy: .public); treating as a lost connection"
             )
-            if beginReconnect(position: position, resume: aetherPlaybackController.shouldPlayWhenReady) {
-                currentTime = position
-                return
-            }
+            lastEndReconnect = position
+            currentTime = position
+            return
         }
 
         hasReachedEndOfFile = true
@@ -4408,8 +4585,9 @@ class PlayerViewModel {
         // treating that as a natural end would trigger autoplay against the
         // same dead network that just dropped us.
         // While the source was failing the clock may have run on without a
-        // frame; the position the stream last played from decides.
-        let sourceFailing = sourceWatch.isStalled || isServerUnreachable
+        // frame; the position the stream last played from decides. A finish
+        // the player made itself ends at the clock it set.
+        let sourceFailing = sourceEnded && (sourceWatch.isStalled || isServerUnreachable)
         let observedPosition = sourceFailing ? sourcePlayhead : currentTime
         let safeDuration = duration
         let isPremature = observedPosition > 0
@@ -4427,27 +4605,6 @@ class PlayerViewModel {
             // Not a finish: the reload must not record the item as completed.
             hasReachedEndOfFile = false
             if remountWatchPartyPlayback(at: observedPosition) { return }
-            hasReachedEndOfFile = true
-        }
-
-        // A progressive remux is one response the engine cannot reconnect: a
-        // connection dropped mid-film (a long pause is enough) ends the
-        // stream for good, and the engine reports it as a clean end without
-        // the stall the check above waits for. Reconnect where it dropped
-        // instead of parking the viewer at the end of a film they have not
-        // finished. The reconnect carries the viewer's pause and is bounded
-        // by its own attempt budget.
-        if isPremature, !isWatchPartyPlayback, offlinePlaybackContext == nil,
-           aetherPlaybackController.activeSpec?.delivery == PlaybackProtocolV3.PlanDelivery.remuxProgressive {
-            Self.logger.warning(
-                "[CMP] handleEndOfFile reconnecting progressive remux: premature EOF at \(observedPosition, privacy: .public)/\(safeDuration, privacy: .public)"
-            )
-            // Not a finish: the reconnect must not record the item as completed.
-            hasReachedEndOfFile = false
-            if beginReconnect(position: observedPosition, resume: aetherPlaybackController.shouldPlayWhenReady) {
-                currentTime = observedPosition
-                return
-            }
             hasReachedEndOfFile = true
         }
 
@@ -4692,6 +4849,7 @@ class PlayerViewModel {
         scrubPreviewImageSourceTime = nil
         seekOriginTime = nil
         seekTargetTime = nil
+        watchPartyHeldSeek = nil
         showControls = false
         // The HUD belongs to the outgoing item. Replans deliberately bypass
         // this reset so the HUD survives them; a replacement load must close
@@ -4994,9 +5152,12 @@ class PlayerViewModel {
             cancelReconnect()
             reconnectCycle.resetBudget()
         }
-        // Any other start takes the session over from a running reconnect.
+        // Any other start takes the session over from a running reconnect,
+        // and from where one last resumed: a retry, a version switch or a
+        // remount is a fresh look at the stream.
         if origin != .reconnect {
             cancelReconnect()
+            lastEndReconnect = nil
         }
         lastLoadRequest = request
         offlinePlaybackContext = nil
@@ -5638,10 +5799,15 @@ class PlayerViewModel {
         sourceWatch.playhead(currentTime: currentTime)
     }
 
-    /// The app's own requests could not reach the server either.
+    /// The app's own requests could not reach the server either, or the
+    /// stream came over the local route, whose address stops leading to the
+    /// server once the device leaves the network. A stream on the local route
+    /// that dies is therefore reconnected first; the reconnect drops the
+    /// route and loads from the saved address, where a genuine failure meets
+    /// the ordinary recovery.
     private var isServerUnreachable: Bool {
         let monitor = ConnectionMonitor.shared
-        return !monitor.isDeviceOnline || monitor.serverStatus == .unreachable
+        return !monitor.isDeviceOnline || monitor.serverStatus == .unreachable || streamLocalRoute != nil
     }
 
     /// Starts a reconnect, or joins the one already running. Returns false
@@ -5659,6 +5825,9 @@ class PlayerViewModel {
             return false
         }
         if reconnectCycle.isActive { return true }
+        if let streamLocalRoute {
+            LocalRouteController.reportFailure(of: streamLocalRoute)
+        }
         // Taken while the viewer's selection is still published. After a
         // give-up the session is torn down, so Try again reuses it.
         if activePreparedProtocolV3 != nil || reconnectLoadRequest == nil {
@@ -6372,10 +6541,31 @@ class PlayerViewModel {
         to target: Double, source: String = "unspecified", roomCommand: Bool = false,
         requestedPaused: Bool? = nil
     ) -> Bool {
-        if !roomCommand, watchPartyAdapter?.request(.seek(target), isPaused: requestedPaused) == true {
+        if !roomCommand, let outcome = watchPartyAdapter?.submit(.seek(target), isPaused: requestedPaused),
+           outcome != .solo {
             isScrubbing = false
-            scrubPreviewTime = watchPartyPlaybackSnapshot.sourceTime
             scrubPreviewProvider.endInteraction()
+            // A request the room session did not send (denied, or not
+            // connected and attached) never runs: nothing is held, and the
+            // timeline stays on the engine.
+            guard outcome == .sent else {
+                scrubPreviewTime = watchPartyPlaybackSnapshot.sourceTime
+                return true
+            }
+            // The room runs the seek a lead later. Until then show the
+            // requested target, as a local seek does, so the timeline does
+            // not snap back and the next relative skip builds on it instead
+            // of on the stream the room is about to move.
+            // The origin is the engine's clock: an earlier request's held
+            // target is not where playback ticks will come from.
+            let requested = duration > 0 ? min(max(0, target), duration) : max(0, target)
+            let origin = watchPartyPlaybackSnapshot.sourceTime
+            seekOriginTime = origin
+            seekTargetTime = requested
+            watchPartyHeldSeek = WatchPartyHeldSeek(target: requested, origin: origin)
+            currentTime = requested
+            scrubPreviewTime = requested
+            armSeekFilterTimeout(restoringRoomPosition: true)
             return true
         }
         let clampedTarget = duration > 0 ? min(max(0, target), duration) : max(0, target)
@@ -6401,11 +6591,19 @@ class PlayerViewModel {
             "[CMP-SEEK] commit requested source=\(source, privacy: .public) target=\(clampedTarget, privacy: .public) current=\(self.currentTime, privacy: .public) route=\(self.activeRouteLabel, privacy: .public) replan=\(requiresReplan, privacy: .public)"
         )
         hasReachedEndOfFile = false
-        seekOriginTime = currentTime
-        seekTargetTime = clampedTarget
-        currentTime = clampedTarget
+        // A room seek for an earlier skip in a burst moves the engine but
+        // leaves the newest request on the timeline, and ticks from the
+        // engine's new position are filtered as stale until the room's seek
+        // to that request runs. That seek still filters ticks from where the
+        // engine played, not from the target the timeline already shows.
+        var held = roomCommand ? watchPartyHeldSeek : nil
+        let (shownTarget, origin) = WatchPartyHeldSeek.roomSeek(to: clampedTarget, held: &held, from: currentTime)
+        watchPartyHeldSeek = held
+        seekOriginTime = origin
+        seekTargetTime = shownTarget
+        currentTime = shownTarget
         sourceWatch.seekCommitted(to: clampedTarget)
-        scrubPreviewTime = clampedTarget
+        scrubPreviewTime = shownTarget
         isScrubbing = false
         scrubPreviewProvider.endInteraction()
 
@@ -6472,14 +6670,7 @@ class PlayerViewModel {
             }
         }
 
-        seekFilterTimeoutTask?.cancel()
-        seekFilterTimeoutTask = Task { @MainActor [weak self] in
-            try? await Task.sleep(nanoseconds: Self.seekFilterNanos)
-            guard !Task.isCancelled, let self else { return }
-            self.seekOriginTime = nil
-            self.seekTargetTime = nil
-            self.seekFilterTimeoutTask = nil
-        }
+        armSeekFilterTimeout(restoringRoomPosition: held != nil)
         // Playback ticks stop while paused, so a seek out of (or back into)
         // the intro has to reach the pill here rather than on the next tick.
         // Last, after this seek is fully issued: a seek into an unresolved
@@ -6716,7 +6907,7 @@ class PlayerViewModel {
            target >= duration - 0.5 {
             if presentNextUpOverCredits() { return }
             currentTime = duration
-            handleEndOfFile()
+            handleEndOfFile(sourceEnded: false)
             return
         }
         seekTo(seconds: target)
@@ -6831,6 +7022,27 @@ class PlayerViewModel {
             handleNowPlayingPlay()
         }
         scheduleHideControls()
+    }
+
+    /// Lets playback ticks through again if the seek never arrives. A held
+    /// room request the room never answered (refused, or lost in flight)
+    /// also puts the timeline back on the engine's position: ticks
+    /// behind the held target would be filtered out as stale, and a paused
+    /// member sends none.
+    private func armSeekFilterTimeout(restoringRoomPosition: Bool = false) {
+        seekFilterTimeoutTask?.cancel()
+        seekFilterTimeoutTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: Self.seekFilterNanos)
+            guard !Task.isCancelled, let self else { return }
+            self.seekOriginTime = nil
+            self.seekTargetTime = nil
+            self.watchPartyHeldSeek = nil
+            self.seekFilterTimeoutTask = nil
+            if restoringRoomPosition, self.isWatchPartyPlayback, !self.isScrubbing {
+                self.currentTime = self.watchPartyPlaybackSnapshot.sourceTime
+                self.scrubPreviewTime = self.currentTime
+            }
+        }
     }
 
     /// Abandon an in-progress scrub without seeking. Used when the user
@@ -7398,6 +7610,12 @@ class PlayerViewModel {
         }
     }
 
+    /// Whether a clock tick during a seek is from before it: nearer the
+    /// position the seek left than its target.
+    nonisolated static func isStaleSeekTick(_ time: Double, origin: Double, target: Double) -> Bool {
+        abs(time - origin) < abs(time - target)
+    }
+
     static func isUnexpectedBackwardPlaybackTime(
         _ candidate: Double,
         currentTime: Double,
@@ -7784,10 +8002,11 @@ class PlayerViewModel {
         // teardown below clears `creditsRange` before the final progress
         // flush reads the latch.
         didSkipCreditsToEnd = skippedCreditsToEnd
+        let reportedPosition = progressReportPosition
         let currentItemCompleted = PlayerNextUpCompletionPolicy.shouldFinalizeAsCompleted(
             isNextUpPresented: showNextUpScreen,
             hasReachedEndOfFile: finishedAtEndOfFile,
-            currentTime: currentTime,
+            currentTime: reportedPosition,
             duration: duration,
             promptSeconds: settings.nextUpPromptSeconds,
             skippedCredits: skippedCreditsToEnd
@@ -7797,7 +8016,7 @@ class PlayerViewModel {
         // often before the Next Up prompt. Leaving during the credits must
         // still move the Series page on to the next episode.
         let crossedWatchedThreshold = duration.isFinite && duration > 0
-            && currentTime / duration > Self.defaultWatchedFraction
+            && reportedPosition / duration > Self.defaultWatchedFraction
         SeriesPlaybackReturnInbox.publish(
             seriesPlaybackReturn(completed: currentItemCompleted || crossedWatchedThreshold),
             generation: seriesReturnGeneration
@@ -9143,7 +9362,7 @@ class PlayerViewModel {
                     continue
                 }
                 let result = await self.sessionBridge.reportProgress(
-                    position: self.currentTime,
+                    position: self.progressReportPosition,
                     isPaused: !self.isPlaying
                 )
                 if result == .sessionEnded {
@@ -9158,7 +9377,7 @@ class PlayerViewModel {
                 if result == .missingSession {
                     _ = self.attemptStaleSessionRenewal(
                         reason: "progress",
-                        observedPosition: self.currentTime
+                        observedPosition: self.progressReportPosition
                     )
                 } else {
                     await self.attemptProtocolV3AuthenticationReloadAfterProgress(result)
@@ -9462,6 +9681,7 @@ extension PlayerViewModel {
         watchPartyAdapter = adapter
         watchPartyLocalPreparation = false
         cancelWatchPartyCorrection()
+        watchPartyAppliedRate = nil
         watchPartyReloadBudget = WatchPartyReloadBudget()
         aetherPlaybackController.requiresExplicitTransportResume = true
         aetherPlaybackController.permitsExternalPlayback = false
@@ -9486,7 +9706,7 @@ extension PlayerViewModel {
         request.allowAlternateVersions = false
         beginFreshLoad(
             request: request,
-            progressPosition: activePlaybackSessionId == nil ? nil : currentTime,
+            progressPosition: activePlaybackSessionId == nil ? nil : progressReportPosition,
             resumePositionOverride: context.startPosition,
             allowNearEndResume: true
         )
@@ -9544,44 +9764,84 @@ extension PlayerViewModel {
 
     func cancelWatchPartyCorrection() {
         watchPartyCorrectionRate = 1
-        watchPartyCatchup = nil
-        if isWatchPartyPlayback { aetherPlaybackController.setSpeed(1) }
+        syncWatchPartyRate()
     }
 
-    /// Applies a server correction to a playing member: no change inside the
-    /// deadband, a rate catch-up for small drift, and for larger drift a seek
-    /// to media already buffered or a budgeted load for media that is not.
-    /// Returns without waiting for a rate catch-up, so the member keeps
-    /// reporting while it converges.
+    func noteWatchPartyRoomSeekArrived(at position: Double) {
+        guard watchPartyHeldSeek?.isAnswered(byRoomSeekTo: position) == true else { return }
+        watchPartyHeldSeek?.seekArrived = true
+    }
+
+    func watchPartyRoomCommandStarts(seekingTo position: Double?) {
+        guard watchPartyHeldSeek?.isReleased(byCommandSeekingTo: position) == true else { return }
+        releaseWatchPartyHeldSeek()
+    }
+
+    /// Ends a held seek request the room will not run and puts the timeline
+    /// back on the engine, as the seek filter's timeout would.
+    func releaseWatchPartyHeldSeek() {
+        guard watchPartyHeldSeek != nil else { return }
+        watchPartyHeldSeek = nil
+        seekOriginTime = nil
+        seekTargetTime = nil
+        seekFilterTimeoutTask?.cancel()
+        seekFilterTimeoutTask = nil
+        guard isWatchPartyPlayback, !isScrubbing else { return }
+        currentTime = watchPartyPlaybackSnapshot.sourceTime
+        scrubPreviewTime = currentTime
+    }
+
+    /// Hands the member's rate to Aether while it plays. Setting a rate on a
+    /// paused Aether player starts it, which made a paused member play from
+    /// every room command, socket renewal, and seek until the command ran.
+    private func syncWatchPartyRate() {
+        guard isWatchPartyPlayback, !isDisposed, aetherPlaybackController.engine.state == .playing,
+              watchPartyAppliedRate != watchPartyCorrectionRate else { return }
+        aetherPlaybackController.setSpeed(watchPartyCorrectionRate)
+        watchPartyAppliedRate = watchPartyCorrectionRate
+    }
+
+    /// Applies a room command to a playing member: drift up to `seekBand`
+    /// converges by rate, larger drift seeks to media already buffered or
+    /// takes a budgeted load for media that is not. Returns without waiting
+    /// for a rate nudge, so the member keeps reporting meanwhile.
     func correctWatchPartyPlayback(
-        to position: Double, context: WatchPartyPlaybackContext
+        to position: Double, seekBand: Double, context: WatchPartyPlaybackContext
     ) async throws -> WatchPartyPlaybackSnapshot {
         guard position.isFinite, position >= 0, !isDisposed,
               watchPartyAdapter?.context == context else { throw WatchPartyPlaybackError.invalidated }
         let local = watchPartyPlaybackSnapshot.sourceTime
-        let locallySeekable = canSeekWatchPartyLocally(to: position)
-        switch WatchPartyCorrection.resolve(drift: position - local) {
-        case .none:
-            // Already at the room position; drop any stale catch-up.
-            cancelWatchPartyCorrection()
-            watchPartyReloadBudget.settle()
-            return watchPartyPlaybackSnapshot
-        case .seek:
-            if WatchPartyCorrection.targetBuffered(
-                position, local: local, locallySeekable: locallySeekable,
-                forwardBuffer: aetherPlaybackController.engine.liveTelemetry?.forwardBufferSeconds
-            ) {
-                return try await applyWatchPartyTransport(.seek(position), context: context, origin: .realign)
-            }
-            return try await loadWatchPartyCorrection(to: position, context: context)
-        case .rate(let rate):
-            guard watchPartyPlaybackSnapshot.isPlaying else { return watchPartyPlaybackSnapshot }
-            cancelWatchPartyCorrection()
-            watchPartyCorrectionRate = rate
-            watchPartyCatchup = (position, Date())
-            aetherPlaybackController.setSpeed(rate)
+        guard WatchPartyCorrection.seeks(drift: position - local, band: seekBand) else {
+            nudgeWatchPartyPlayback(drift: position - local)
             return watchPartyPlaybackSnapshot
         }
+        if watchPartyTargetReachableInPlace(position) {
+            return try await applyWatchPartyTransport(.seek(position), context: context, origin: .realign)
+        }
+        return try await loadWatchPartyCorrection(to: position, context: context)
+    }
+
+    /// Converges a playing member on the room by playback rate, with the
+    /// hysteresis in `WatchPartyCorrection.nudge`. It never seeks, and it
+    /// leaves a correction load in flight to land first.
+    func nudgeWatchPartyPlayback(drift: Double) {
+        let snapshot = watchPartyPlaybackSnapshot
+        guard isWatchPartyPlayback, !isDisposed, !watchPartyReloadBudget.inFlight(at: Date()),
+              snapshot.isPlaying, snapshot.isReady, !snapshot.isBuffering else { return }
+        let rate = WatchPartyCorrection.nudge(drift: drift, currentRate: watchPartyCorrectionRate)
+        if rate == 1 { watchPartyReloadBudget.settle() }
+        guard rate != watchPartyCorrectionRate else { return }
+        watchPartyCorrectionRate = rate
+        syncWatchPartyRate()
+    }
+
+    /// Whether a seek to `position` lands in media this member already has.
+    func watchPartyTargetReachableInPlace(_ position: Double) -> Bool {
+        WatchPartyCorrection.targetBuffered(
+            position, local: watchPartyPlaybackSnapshot.sourceTime,
+            locallySeekable: canSeekWatchPartyLocally(to: position),
+            forwardBuffer: aetherPlaybackController.engine.liveTelemetry?.forwardBufferSeconds
+        )
     }
 
     /// A correction to media that is not buffered loads it and lands late by
@@ -9595,9 +9855,19 @@ extension PlayerViewModel {
         guard watchPartyReloadBudget.allowed(at: now) else { return watchPartyPlaybackSnapshot }
         let aim = watchPartyReloadBudget.begin(roomPosition: position, at: now, duration: duration)
         let generation = watchPartyReloadBudget.generation
+        let before = watchPartyPlaybackSnapshot
+        let startedAt = Date()
         do {
             let snapshot = try await applyWatchPartyTransport(.seek(aim), context: context, origin: .correctionLoad)
-            if watchPartyReloadBudget.generation == generation { watchPartyReloadBudget.noteLoading() }
+            if watchPartyReloadBudget.generation == generation {
+                watchPartyReloadBudget.noteLoading()
+                // A refused reanchor returns too, with the old stream still
+                // playing; only a stream that moved toward the aim is this load.
+                let played = before.isPlaying ? Date().timeIntervalSince(startedAt) : 0
+                if WatchPartyReloadBudget.moved(from: before.sourceTime, played: played, to: snapshot.sourceTime, toward: aim) {
+                    watchPartyReloadBudget.noteSeekCompleted()
+                }
+            }
             return snapshot
         } catch is CancellationError {
             // A newer room command cancelled the wait, not the seek, which is
@@ -9611,20 +9881,20 @@ extension PlayerViewModel {
         }
     }
 
-    /// Runs on each playback clock update, like the web client's timeupdate
-    /// handler: a rate catch-up that reached the advancing room returns to
-    /// 1x, and a correction load that is playing records its load time as the
-    /// next load's lead.
+    /// Runs on each playback clock update. The room session drives the rate
+    /// nudge; here a rate that could not reach Aether while it was paused or
+    /// rebuffering is handed over once it plays, and a correction load that is
+    /// playing records its load time as the next load's lead.
     private func updateWatchPartyCatchup() {
-        guard isWatchPartyPlayback, watchPartyCatchup != nil || watchPartyReloadBudget.target != nil else { return }
-        let snapshot = watchPartyPlaybackSnapshot
+        guard isWatchPartyPlayback else { return }
+        syncWatchPartyRate()
+        guard watchPartyReloadBudget.target != nil else { return }
         let now = Date()
-        if let catchup = watchPartyCatchup,
-           WatchPartyCorrection.converged(target: catchup.target, elapsed: now.timeIntervalSince(catchup.startedAt),
-                                          local: snapshot.sourceTime) {
-            cancelWatchPartyCorrection()
-            watchPartyReloadBudget.settle()
+        guard watchPartyReloadBudget.inFlight(at: now) else {
+            watchPartyReloadBudget.expire(at: now)
+            return
         }
+        let snapshot = watchPartyPlaybackSnapshot
         if snapshot.isPlaying, snapshot.isReady, watchPartyReloadBudget.landed(at: snapshot.sourceTime) {
             watchPartyReloadBudget.land(at: now)
         }
@@ -9700,7 +9970,15 @@ extension PlayerViewModel {
             // or revive a dead one at the position it dropped. Stay paused at
             // the end; the room's next seek remounts this member.
             if hasReachedEndOfFile { break }
-            aetherPlaybackController.setSpeed(watchPartyCorrectionRate)
+            // The room wants this member playing, so the rate may start it.
+            // A stopped member starts at 1x and the drift loop nudges from
+            // there. A member already playing at its rate is left alone: on
+            // the software path every rate write re-times the audio clock.
+            if aetherPlaybackController.engine.state != .playing { watchPartyCorrectionRate = 1 }
+            if aetherPlaybackController.engine.state != .playing || watchPartyAppliedRate != watchPartyCorrectionRate {
+                aetherPlaybackController.setSpeed(watchPartyCorrectionRate)
+                watchPartyAppliedRate = watchPartyCorrectionRate
+            }
             aetherPlaybackController.play()
         case .pause:
             cancelWatchPartyCorrection()
