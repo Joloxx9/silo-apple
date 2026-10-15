@@ -106,12 +106,22 @@ actor ServerTrickplaySheets {
 
     /// Fetches every sheet in order, so a scrub anywhere in the file finds
     /// its thumbnail without a round trip. A whole film is a handful of
-    /// sheets; one that fails is fetched again when a scrub needs it.
+    /// sheets; one that fails is fetched again when a scrub needs it. A
+    /// renewal that lays the thumbnails out again restarts it on the new
+    /// sheets.
     func prefetch() async {
-        for sheet in trickplay.sheetURLs.indices {
+        var sheet = 0
+        var layout = layout
+        while sheet < trickplay.sheetURLs.count {
             if Task.isCancelled || closed { return }
-            guard data[sheet] == nil, let fetch = fetch(sheet) else { continue }
-            _ = await fetch.value
+            if layout != self.layout {
+                layout = self.layout
+                sheet = 0
+            }
+            if data[sheet] == nil, let fetch = fetch(sheet) {
+                _ = await fetch.value
+            }
+            if layout == self.layout { sheet += 1 }
         }
     }
 
@@ -158,11 +168,12 @@ actor ServerTrickplaySheets {
     /// on the sheet uses this to ask again once it arrives. Without a sheet
     /// held or downloading, the answer is false.
     func awaitSheet(atSourceTime seconds: Double) async -> Bool {
+        let layout = layout
         guard !closed, let tile = trickplay.tile(atSourceTime: seconds) else { return false }
         if data[tile.sheet] == nil, let fetch = fetches[tile.sheet] {
             _ = await fetch.value
         }
-        return !closed && data[tile.sheet] != nil
+        return !closed && layout == self.layout && data[tile.sheet] != nil
     }
 
     /// A download's result, or nil once `limit` passes. Returning at the
