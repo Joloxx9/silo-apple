@@ -82,8 +82,9 @@ enum RecapAutoSkipPolicy {
     }
 }
 
-/// What the up-next screen offers: the series' next episode, or a shuffle's
-/// next pick, which may be a movie.
+/// What the up-next screen offers: the series' next episode, a shuffle's
+/// next pick, which may be a movie, or, when neither exists, the first On
+/// Deck item.
 struct PlayerNextUpEpisode: Identifiable, Hashable {
     let contentId: String
     let seriesId: String?
@@ -101,6 +102,9 @@ struct PlayerNextUpEpisode: Identifiable, Hashable {
     /// The profile's watch state for the next episode, so the Up Next screen
     /// can apply spoiler protection.
     let watchState: EpisodeWatchState
+    /// Taken from On Deck because the current item has no successor. It may
+    /// be another title in another library.
+    var isFromOnDeck = false
 
     var id: String { contentId }
     var episodeLabel: String? { isEpisode ? "S\(seasonNumber):E\(episodeNumber)" : nil }
@@ -144,6 +148,25 @@ struct PlayerNextUpEpisode: Identifiable, Hashable {
         airDate = item.releaseDate
         // Shuffle picks carry no watch state, so an episode reads as untouched.
         watchState = EpisodeWatchState(played: false)
+    }
+
+    init(onDeckItem item: PlayerOnDeckItem) {
+        let section = item.sectionItem
+        isFromOnDeck = true
+        contentId = item.contentId
+        isEpisode = section.isEpisodeItem
+        seriesId = isEpisode ? section.seriesId : nil
+        seriesTitle = isEpisode ? section.seriesTitle : nil
+        seasonNumber = section.seasonNumber ?? 0
+        episodeNumber = section.episodeNumber ?? 0
+        let trimmedTitle = section.title.trimmingCharacters(in: .whitespacesAndNewlines)
+        title = trimmedTitle.isEmpty && isEpisode ? "Episode \(episodeNumber)" : trimmedTitle
+        overview = section.overview
+        runtime = section.runtime
+        stillUrl = item.artworkUrl
+        stillThumbhash = item.artworkThumbhash
+        airDate = nil
+        watchState = EpisodeWatchState(sectionItem: section)
     }
 }
 
@@ -2741,6 +2764,7 @@ class PlayerViewModel {
               let seriesId = detail.seriesId,
               let seasonNumber = detail.seasonNumber,
               let episodeNumber = detail.episodeNumber else {
+            offerOnDeckItemIfNothingNext()
             return
         }
 
@@ -2765,6 +2789,7 @@ class PlayerViewModel {
                 self.nextUpEpisode = episode
                 self.isLoadingNextUpEpisode = false
                 self.nextUpLookupError = nil
+                if episode == nil && self.offerOnDeckItemIfNothingNext() { return }
                 if self.showNextUpScreen {
                     self.startNextUpCountdownIfNeeded()
                 } else {
@@ -2803,8 +2828,13 @@ class PlayerViewModel {
                 guard !Task.isCancelled, !self.isDisposed else { return }
                 guard isCurrentOwner else { throw HTTPError.requestIdentityChanged }
                 let response = read.response
-                self.nextUpOnDeckItems = await self.resolveOnDeckItems(from: response, currentDetail: detail)
+                let items = await self.resolveOnDeckItems(from: response, currentDetail: detail)
+                // A newer load cancels this task; its items would become that
+                // load's Up Next pick.
+                guard !Task.isCancelled, !self.isDisposed else { return }
+                self.nextUpOnDeckItems = items
                 self.isLoadingNextUpOnDeck = false
+                if self.offerOnDeckItemIfNothingNext() { return }
                 self.updateNextUpPresentation(for: self.currentTime)
             } catch {
                 guard !Task.isCancelled, !self.isDisposed else { return }
@@ -2812,6 +2842,34 @@ class PlayerViewModel {
                 self.isLoadingNextUpOnDeck = false
             }
         }
+    }
+
+    /// With no next episode, the first On Deck item is up next, so playback
+    /// carries on into what the profile is watching elsewhere instead of
+    /// stopping at the end. A failed episode lookup offers nothing: the
+    /// series may still have a next episode. Returns whether it offered one.
+    @discardableResult
+    private func offerOnDeckItemIfNothingNext() -> Bool {
+        #if os(macOS)
+        // macOS has no Up Next screen, so the pick would start another title
+        // with no countdown on screen and no way to cancel it.
+        return false
+        #else
+        guard !isWatchPartyPlayback,
+              shuffleState == nil,
+              nextUpEpisode == nil,
+              !isLoadingNextUpEpisode,
+              nextUpLookupError == nil,
+              !isStartingNextUp,
+              let item = nextUpCarouselItems.first else { return false }
+        nextUpEpisode = PlayerNextUpEpisode(onDeckItem: item)
+        if showNextUpScreen {
+            startNextUpCountdownIfNeeded()
+        } else {
+            updateNextUpPresentation(for: currentTime)
+        }
+        return true
+        #endif
     }
 
     private func resolveOnDeckItems(
@@ -3239,8 +3297,12 @@ class PlayerViewModel {
             preferredSidecarSubtitleTrackId: nil,
             startFromBeginning: false
         )
-        request.libraryId = libraryId
-        request.preferredQualityOverride = nextEpisodeQualityOverride
+        // An On Deck pick is another title, often in another library; it
+        // starts like a tap on its card.
+        if nextUpEpisode?.isFromOnDeck != true {
+            request.libraryId = libraryId
+            request.preferredQualityOverride = nextEpisodeQualityOverride
+        }
         beginFreshLoad(
             request: request,
             progressPosition: completionProgressPositionForCurrentItem(),
@@ -3538,13 +3600,16 @@ class PlayerViewModel {
         }
         // The player closed while the next episode was still loading. Autoplay
         // keeps that episode's season in `nextUpEpisode`; otherwise assume the
-        // previous episode's season.
-        guard let loadingId = lastLoadRequest?.contentId, let lastSeriesPlayback else { return nil }
+        // previous episode's season. An On Deck pick belongs to its own
+        // series, or to none, not to the one that just finished.
+        guard let loadingId = lastLoadRequest?.contentId else { return nil }
         let queued = nextUpEpisode?.contentId == loadingId ? nextUpEpisode : nil
+        let seriesId = queued?.isFromOnDeck == true ? queued?.seriesId : lastSeriesPlayback?.seriesId
+        guard let seriesId = Self.nonEmpty(seriesId) else { return nil }
         return SeriesPlaybackReturn(
             episodeContentId: loadingId,
-            seriesContentId: lastSeriesPlayback.seriesId,
-            seasonNumber: queued?.seasonNumber ?? lastSeriesPlayback.seasonNumber,
+            seriesContentId: seriesId,
+            seasonNumber: queued?.seasonNumber ?? lastSeriesPlayback?.seasonNumber,
             completed: false
         )
     }
