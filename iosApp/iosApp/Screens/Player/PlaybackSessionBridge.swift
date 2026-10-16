@@ -874,9 +874,10 @@ actor PlaybackSessionBridge {
         }
         let resolvedAudioTrackIndex = preferredAudioTrackIndex
             ?? selectedVersion.effectiveAudioTrackIndex
-        let selectedAudioLanguage = selectedVersion.audioTracks?.first(where: {
-            $0.index == resolvedAudioTrackIndex
-        })?.language
+        let selectedAudioLanguage = Self.startAudioLanguage(
+            version: selectedVersion,
+            audioOrdinal: resolvedAudioTrackIndex
+        )
         let subtitleIntent = Self.initialProtocolV3SubtitleIntent(
             version: selectedVersion,
             explicitFFmpegIndex: preferredSubtitleTrackIndex,
@@ -889,7 +890,7 @@ actor PlaybackSessionBridge {
                 ? SubtitleMode(rawValue: watchDetail.effectiveSubtitleMode ?? "")
                 : initialSubtitlePreferences?.mode,
             showForced: initialSubtitlePreferences?.showForced
-                ?? (watchDetail.effectiveShowForcedSubtitles ?? false),
+                ?? watchDetail.showsForcedSubtitles,
             forcedOnly: initialSubtitlePreferences?.forcedOnly ?? false,
             preferAccessibilityTracks: initialSubtitlePreferences?.preferAccessibilityTracks ?? false,
             disableWhenNoLanguageMatch: initialSubtitlePreferences?.disableWhenNoLanguageMatch ?? false,
@@ -948,6 +949,37 @@ actor PlaybackSessionBridge {
             subtitleCombinedIndex: subtitleIntent.combinedIndex,
             allowAlternateVersions: allowAlternateVersions
         )
+    }
+
+    /// The language of the audio a start will play, for the subtitle policy.
+    ///
+    /// `audioOrdinal` is the position in `version.audioTracks`, the meaning
+    /// both `effective_audio_track_index` and the V3 audio track index carry.
+    /// It is not the stream index in `AudioTrack.index`: matching it against
+    /// that left the language unknown whenever the two differ (an MKV with
+    /// video at stream 0 and its one audio track at stream 1), and Auto then
+    /// picked full subtitles where the audio already matched the subtitle
+    /// language. Without a usable ordinal, or when the track it names has no
+    /// language, the server's effective audio language (for that same track),
+    /// then the default (or only) track's, stand in.
+    static func startAudioLanguage(version: FileVersion?, audioOrdinal: Int?) -> String? {
+        guard let version else { return nil }
+        let tracks = version.audioTracks ?? []
+        func usable(_ language: String?) -> String? {
+            guard let language = language?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !language.isEmpty else { return nil }
+            return language
+        }
+        if let audioOrdinal, tracks.indices.contains(audioOrdinal),
+           let language = usable(tracks[audioOrdinal].language) {
+            return language
+        }
+        if audioOrdinal == nil || audioOrdinal == version.effectiveAudioTrackIndex,
+           let effective = usable(version.effectiveAudioLanguage) {
+            return effective
+        }
+        guard audioOrdinal == nil else { return nil }
+        return usable((tracks.first { $0.isDefault == true } ?? tracks.first)?.language)
     }
 
     /// Resolves "Auto" before the first V3 request. The player otherwise

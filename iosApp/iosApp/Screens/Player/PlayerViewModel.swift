@@ -1078,12 +1078,13 @@ class PlayerViewModel {
     /// don't keep re-evaluating (and overriding the user) on every
     /// subsequent track-list update.
     private var prefsResolvedForCurrentItem: Bool = false
-    /// A caption pick that arrived before the current V3 load committed and
-    /// therefore could not replan yet. The resolved pick itself is kept, not
-    /// the preference snapshot that produced it: a system caption request
-    /// resolves from the OS language and would be lost if the generic
-    /// preference snapshot were rerun in its place. Drained once the load's
-    /// server transition commits.
+    /// A caption pick that arrived before the current V3 load or replan
+    /// committed and therefore could not replan yet. The resolved pick itself
+    /// is kept, not the preference snapshot that produced it: a system
+    /// caption request resolves from the OS language and would be lost if the
+    /// generic preference snapshot were rerun in its place. Drained once the
+    /// load's server transition commits, or when the replan task (or a seek
+    /// it queued) exits. A newer automatic decision replaces it.
     private var deferredAutoSubtitlePick: SubtitleAutoSelection?
     private var resolvedServerUrl: String = ""
     private var currentWatchDetail: WatchDetail?
@@ -1205,10 +1206,16 @@ class PlayerViewModel {
         /// Refresh the inputs used by session renewal from an adopted V3 plan.
         /// Player track lists are transient and may already be empty when a
         /// failed transport reports that its server session disappeared.
+        ///
+        /// `keepsExplicitOff` is set when the viewer chose the subtitles
+        /// themselves. An off plan then stays an explicit Off (`-1`), so a
+        /// retry or renewal starts fully off instead of letting the automatic
+        /// policy pick a forced track for a server-side mode Off.
         func adoptingProtocolV3Intent(
             plan: PlaybackV3Plan,
             selectedVersion: FileVersion,
-            activeQualityId: String
+            activeQualityId: String,
+            keepsExplicitOff: Bool = false
         ) -> LoadRequest {
             // Shared resolution order; see
             // `PlaybackV3Plan.selectedSubtitleInventoryItem`. An `off` plan
@@ -1237,7 +1244,7 @@ class PlayerViewModel {
             var request = copyForRecovery(
                 preferredFileId: plan.effectiveMediaFileId,
                 preferredAudioTrackIndex: plan.selectedTracks.audio?.index,
-                preferredSubtitleTrackIndex: embeddedFFmpegIndex,
+                preferredSubtitleTrackIndex: isSubtitleOff && keepsExplicitOff ? -1 : embeddedFFmpegIndex,
                 preferredSidecarSubtitleTrackId: sidecarTrackId,
                 offlineDownloadId: offlineDownloadId
             )
@@ -2491,6 +2498,7 @@ class PlayerViewModel {
             let priorResolvedServerUrl = self.resolvedServerUrl
             let priorPrefsForCurrentItem = self.prefsForCurrentItem
             let priorPrefsResolvedForCurrentItem = self.prefsResolvedForCurrentItem
+            let priorDeferredAutoSubtitlePick = self.deferredAutoSubtitlePick
             // Captured when the replan replaces them, not here: a
             // markers_updated event can land while the replan is in flight.
             var replacedMarkers: ReplacedMarkerRanges?
@@ -2521,6 +2529,9 @@ class PlayerViewModel {
                 self.resolvedServerUrl = priorResolvedServerUrl
                 self.prefsForCurrentItem = priorPrefsForCurrentItem
                 self.prefsResolvedForCurrentItem = priorPrefsResolvedForCurrentItem
+                // A pick held for this replan was resolved against its plan
+                // and audio, which no longer apply.
+                self.deferredAutoSubtitlePick = priorDeferredAutoSubtitlePick
             }
             var uncommittedPrepared: PreparedPlayback?
             var chainedLoadFailureRecovery: (position: Double, classification: String, message: String)?
@@ -2618,6 +2629,9 @@ class PlayerViewModel {
                     self.localProtocolV3SubtitleSelection = nil
                 }
                 self.adoptProtocolV3RenewalIntent(from: prepared)
+                if classification == "audio_track_changed" {
+                    self.reopenAutoSubtitlePolicyForAudioChange()
+                }
                 switch Self.protocolV3SidecarRestoreIntent(
                     snapshot: selectedSubtitleSnapshot,
                     selectedSubtitleIndex: prepared.protocolV3?.plan.selectedTracks.subtitle?.index,
@@ -5040,7 +5054,8 @@ class PlayerViewModel {
         let adopted = lastLoadRequest.adoptingProtocolV3Intent(
             plan: protocolV3.plan,
             selectedVersion: prepared.selectedVersion,
-            activeQualityId: prepared.activeQualityId
+            activeQualityId: prepared.activeQualityId,
+            keepsExplicitOff: hasExplicitSubtitleChoice
         )
         // A seek candidate still carries the server's frozen subtitle. Save
         // the user's newer choice before loading: a failed candidate can be
@@ -6653,7 +6668,10 @@ class PlayerViewModel {
             self.seekReplanTask = nil
             switch result {
             case .completed:
-                break
+                // A seek a replan queued completes here when it needs no
+                // replan of its own, so this is the last chance to apply a
+                // caption pick held for that replan.
+                self.reapplyDeferredAutoSubtitlePolicyIfNeeded()
             case .requiresReplan(let sourceSeconds):
                 if let protocolV3 = self.activePreparedProtocolV3,
                    protocolV3.serverFeatures.contains(PlaybackProtocolV3.seekReanchorFeature) {
@@ -7125,7 +7143,21 @@ class PlayerViewModel {
         persistAudioSelection(track)
         reapplySystemSubtitlePolicy()
         applyAudioTrackSelection(track.trackId, reason: "user_selection")
+        reopenAutoSubtitlePolicyForAudioChange()
+        applyAutoSubtitlePreferencesIfNeeded()
         scheduleHideControls()
+    }
+
+    /// The server-preference subtitle pick depends on the audio language:
+    /// Auto hides subtitles for audio already in the subtitle language, and
+    /// Off shows the forced track for it. After an audio switch the automatic
+    /// pass runs again with the new audio, unless the viewer picked a
+    /// subtitle. On the V3 path this runs when the audio replan commits, so
+    /// the pass sees the new plan. System-caption mode re-runs through
+    /// `reapplySystemSubtitlePolicy` instead.
+    private func reopenAutoSubtitlePolicyForAudioChange() {
+        guard !settings.subtitleMatchesSystemAppearance, !hasExplicitSubtitleChoice else { return }
+        prefsResolvedForCurrentItem = false
     }
 
     /// Subtitle selection state a user pick changes optimistically, so the
@@ -7624,6 +7656,30 @@ class PlayerViewModel {
         default:
             return nil
         }
+    }
+
+    enum AutomaticProtocolV3SubtitlePlanAction: Equatable {
+        /// The plan already has the pick.
+        case keepPlan
+        /// Held in `deferredAutoSubtitlePick` until the running load or
+        /// replan commits; staging a replan now would be rolled back or
+        /// rejected as busy.
+        case holdUntilCommitted
+        case replan
+    }
+
+    /// What an automatic subtitle pick does to the active V3 plan. An audio
+    /// switch re-runs the automatic pass while its own replan is still
+    /// loading, so a pick the new plan lacks is held for that replan's exit
+    /// rather than dropped.
+    static func automaticProtocolV3SubtitlePlanAction(
+        pickCombinedIndex: Int?,
+        planCombinedIndex: Int?,
+        loadCommitted: Bool,
+        replanInFlight: Bool
+    ) -> AutomaticProtocolV3SubtitlePlanAction {
+        guard pickCombinedIndex != planCombinedIndex else { return .keepPlan }
+        return loadCommitted && !replanInFlight ? .replan : .holdUntilCommitted
     }
 
     /// Whether a clock tick during a seek is from before it: nearer the
@@ -9159,9 +9215,21 @@ class PlayerViewModel {
             return
         }
 
-        let audioLang = audioTracks
-            .first(where: { $0.trackId == selectedAudioId })?
-            .lang
+        // When the playing track carries no usable language (none, blank or
+        // "und"), resolve it as the start request did: by that track's
+        // position, or, before the engine reports a track, by the one the
+        // start planned. Treating the audio as unknown here made Auto pick
+        // full subtitles where the audio already matched the subtitle
+        // language, and a next episode could keep that pick.
+        let selectedAudio = audioTracks.first(where: { $0.trackId == selectedAudioId })
+        let audioLang = selectedAudio?.normalizedLanguageCode
+            ?? PlaybackSessionBridge.startAudioLanguage(
+                version: currentSelectedVersion,
+                audioOrdinal: selectedAudio.flatMap(audioSelectionIndex(for:))
+                    ?? activePreparedProtocolV3?.plan.selectedTracks.audio?.index
+                    ?? lastLoadRequest?.preferredAudioTrackIndex
+                    ?? currentSelectedVersion?.effectiveAudioTrackIndex
+            )
         let pick = SubtitleAutoResolver.resolve(.init(
             preferredLanguage: prefs.preferredLanguage,
             additionalPreferredLanguages: prefs.additionalPreferredLanguages,
@@ -9258,7 +9326,7 @@ class PlayerViewModel {
             preferredLanguage: watchDetail.effectiveSubtitleLanguage,
             additionalPreferredLanguages: [],
             mode: SubtitleMode(rawValue: watchDetail.effectiveSubtitleMode ?? ""),
-            showForced: watchDetail.effectiveShowForcedSubtitles ?? false,
+            showForced: watchDetail.showsForcedSubtitles,
             forcedOnly: false,
             preferAccessibilityTracks: false,
             disableWhenNoLanguageMatch: false,
@@ -9270,6 +9338,12 @@ class PlayerViewModel {
     /// alone" case (no preference points anywhere); `disable` and
     /// `select` actually mutate state.
     private func applyAutoSubtitle(_ pick: SubtitleAutoSelection) {
+        if pick != .noChange {
+            // A newer automatic decision replaces one still held for a load
+            // or replan; the held one was resolved for audio that may since
+            // have changed again.
+            deferredAutoSubtitlePick = nil
+        }
         switch pick {
         case .noChange:
             return
@@ -9294,7 +9368,6 @@ class PlayerViewModel {
         if applyLocalProtocolV3SubtitleSelection(track, reason: "auto_preference") { return true }
         guard let activePreparedProtocolV3,
               let version = currentSelectedVersion,
-              protocolV3ReplanTask == nil,
               currentWatchDetail != nil else {
             return false
         }
@@ -9312,7 +9385,13 @@ class PlayerViewModel {
         let planIndex = activePreparedProtocolV3.plan.subtitle.mode == PlaybackProtocolV3.SubtitleMode.off
             ? nil
             : activePreparedProtocolV3.plan.selectedSubtitleCombinedIndex
-        guard combinedIndex != planIndex else {
+        let action = Self.automaticProtocolV3SubtitlePlanAction(
+            pickCombinedIndex: combinedIndex,
+            planCombinedIndex: planIndex,
+            loadCommitted: committedProtocolV3LoadEpoch != nil,
+            replanInFlight: protocolV3ReplanTask != nil
+        )
+        guard action != .keepPlan else {
             return false
         }
         // A replan here is a full engine reload on top of a picture that is
@@ -9323,9 +9402,11 @@ class PlayerViewModel {
         // Inventory arrives as soon as the engine starts loading, before the
         // start's server transition has committed. A replan staged then rolls
         // that transition back and retires the session the engine is opening.
-        // Hold the pick until the load commits; the owning load task drains
-        // it through `reapplyDeferredAutoSubtitlePolicyIfNeeded`.
-        guard committedProtocolV3LoadEpoch != nil else {
+        // A replan still loading (an audio switch re-runs this pass) would
+        // reject another as busy. Hold the pick until the load commits; the
+        // owning load or replan task drains it through
+        // `reapplyDeferredAutoSubtitlePolicyIfNeeded`.
+        guard action == .replan else {
             deferredAutoSubtitlePick = track.map(SubtitleAutoSelection.select) ?? .disable
             return true
         }

@@ -215,6 +215,84 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         XCTAssertTrue(rows.last?.isSelected == true)
     }
 
+    /// Subtitle mode Off with "show forced subtitles" starts on the forced
+    /// track in the audio language, as web and Android do. An explicit Off
+    /// carried by the request still starts with no subtitle.
+    func testInitialIntentForModeOffKeepsTheForcedTrackForTheAudioLanguage() {
+        let version = makeVersion(container: "mkv", videoCodec: "h264", audioCodec: "aac", subtitleTracks: [
+            makeSubtitle(index: 11, codec: "srt", external: false, path: nil),
+            makeSubtitle(index: 12, codec: "srt", external: false, path: nil, forced: true),
+            makeSubtitle(index: 13, codec: "srt", external: false, path: nil, forced: true, language: "ja"),
+        ])
+        func intent(showForced: Bool, audio: String?, explicitCombinedIndex: Int? = nil) -> Int? {
+            PlaybackSessionBridge.initialProtocolV3SubtitleIntent(
+                version: version, explicitFFmpegIndex: nil, explicitCombinedIndex: explicitCombinedIndex,
+                preferredLanguage: "en", mode: .off, showForced: showForced,
+                trackSignature: nil, currentAudioLanguage: audio
+            ).ffmpegStreamIndex
+        }
+        XCTAssertEqual(intent(showForced: true, audio: "eng"), 12)
+        XCTAssertEqual(intent(showForced: true, audio: "ja"), 13)
+        XCTAssertNil(intent(showForced: false, audio: "en"))
+        XCTAssertNil(intent(showForced: true, audio: "fr"), "no forced track in the audio language")
+        XCTAssertNil(intent(showForced: true, audio: nil))
+        XCTAssertNil(intent(showForced: true, audio: "en", explicitCombinedIndex: -1), "an explicit Off stays off")
+    }
+
+    /// The next-episode fixture: video at stream 0, English audio at stream 1
+    /// (ordinal 0), and English full, Spanish and English forced subtitles.
+    /// The effective audio index is an ordinal, so the start must read the
+    /// audio language from ordinal 0, not from a track whose stream index is
+    /// 0. Auto with the audio already in the subtitle language then starts on
+    /// the forced track, as a fresh start and the post-load pass do.
+    func testAutoStartUsesTheAudioOrdinalToKeepForcedOnlyForMatchingAudio() {
+        let version = makeVersion(
+            container: "mkv", videoCodec: "h264", audioCodec: "aac",
+            audioTracks: [makeAudio(index: 1, codec: "aac", isDefault: true, language: "eng")],
+            subtitleTracks: [
+                makeSubtitle(index: 2, codec: "srt", external: false, path: nil, language: "eng"),
+                makeSubtitle(index: 3, codec: "srt", external: false, path: nil, language: "spa"),
+                makeSubtitle(index: 4, codec: "srt", external: false, path: nil, forced: true, language: "eng"),
+            ],
+            effectiveAudioTrackIndex: 0
+        )
+        XCTAssertEqual(PlaybackSessionBridge.startAudioLanguage(version: version, audioOrdinal: 0), "eng")
+        XCTAssertEqual(PlaybackSessionBridge.startAudioLanguage(version: version, audioOrdinal: nil), "eng")
+        XCTAssertNil(PlaybackSessionBridge.startAudioLanguage(version: version, audioOrdinal: 5))
+
+        let intent = PlaybackSessionBridge.initialProtocolV3SubtitleIntent(
+            version: version, explicitFFmpegIndex: nil, explicitCombinedIndex: nil,
+            preferredLanguage: "en", mode: .auto, showForced: true, trackSignature: nil,
+            currentAudioLanguage: PlaybackSessionBridge.startAudioLanguage(
+                version: version, audioOrdinal: version.effectiveAudioTrackIndex
+            )
+        )
+        XCTAssertEqual(intent.ffmpegStreamIndex, 4)
+    }
+
+    func testStartAudioLanguageFallsBackToTheServersEffectiveLanguage() {
+        let unlabelled = makeVersion(
+            container: "mkv", videoCodec: "h264", audioCodec: "aac",
+            effectiveAudioTrackIndex: 0, effectiveAudioLanguage: "ja"
+        )
+        XCTAssertEqual(PlaybackSessionBridge.startAudioLanguage(version: unlabelled, audioOrdinal: 0), "ja")
+        XCTAssertEqual(PlaybackSessionBridge.startAudioLanguage(version: unlabelled, audioOrdinal: nil), "ja")
+        XCTAssertNil(PlaybackSessionBridge.startAudioLanguage(version: nil, audioOrdinal: 0))
+
+        // The track is listed but carries no language: the server's language
+        // for that same track stands in, and not for a different one.
+        let blankTrack = makeVersion(
+            container: "mkv", videoCodec: "h264", audioCodec: "aac",
+            audioTracks: [
+                makeAudio(index: 1, codec: "aac", isDefault: true, language: " "),
+                makeAudio(index: 2, codec: "aac", isDefault: false, language: ""),
+            ],
+            effectiveAudioTrackIndex: 0, effectiveAudioLanguage: "ja"
+        )
+        XCTAssertEqual(PlaybackSessionBridge.startAudioLanguage(version: blankTrack, audioOrdinal: 0), "ja")
+        XCTAssertNil(PlaybackSessionBridge.startAudioLanguage(version: blankTrack, audioOrdinal: 1))
+    }
+
     func testLocalSelectionCannotSelectReusedOrdinalFromAnotherFile() {
         let selection = ProtocolV3SubtitleSelection.track("file:other:subtitle:3")
         let plan = makePlan(subtitleInventory: [makeInventoryItem(combinedIndex: 3, source: "external")])
@@ -399,6 +477,37 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         XCTAssertFalse(PlayerViewModel.serverSubtitlesDisabledForResume(
             selectedTrackID: nil, hasExplicitChoice: false,
             pendingEmbeddedIndex: nil, pendingSidecarID: nil))
+    }
+
+    /// An Off the viewer chose survives adopting the server's off plan, so a
+    /// retry starts fully off. Without an explicit choice an off plan stays
+    /// automatic, and a server mode Off with forced subtitles on starts on the
+    /// forced track in the audio language again.
+    func testAdoptingAnOffPlanKeepsAnExplicitOffForRetry() {
+        let version = makeVersion(container: "mkv", videoCodec: "h264", audioCodec: "aac", subtitleTracks: [
+            makeSubtitle(index: 11, codec: "srt", external: false, path: nil),
+            makeSubtitle(index: 12, codec: "srt", external: false, path: nil, forced: true),
+        ])
+        let plan = makePlan(container: "mkv", subtitleMode: "off")
+        let request = PlayerViewModel.LoadRequest(
+            contentId: "movie", preferredFileId: 42, preferredAudioTrackIndex: nil,
+            preferredSubtitleTrackIndex: nil, preferredSidecarSubtitleTrackId: nil,
+            startFromBeginning: false
+        )
+        func retryStart(keepsExplicitOff: Bool) -> Int? {
+            let retry = request.adoptingProtocolV3Intent(
+                plan: plan, selectedVersion: version, activeQualityId: "original",
+                keepsExplicitOff: keepsExplicitOff
+            )
+            return PlaybackSessionBridge.initialProtocolV3SubtitleIntent(
+                version: version, explicitFFmpegIndex: retry.preferredSubtitleTrackIndex,
+                explicitCombinedIndex: retry.preferredProtocolV3SubtitleIndex,
+                preferredLanguage: "en", mode: .off, showForced: true,
+                trackSignature: nil, currentAudioLanguage: "eng"
+            ).ffmpegStreamIndex
+        }
+        XCTAssertNil(retryStart(keepsExplicitOff: true))
+        XCTAssertEqual(retryStart(keepsExplicitOff: false), 12)
     }
 
     func testRenewalPreservesBurnInBeforeItsPickerSelectionPublishes() {
@@ -1903,6 +2012,27 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         XCTAssertEqual(ordinals, DownloadedSubtitleOrdinals(published: ["11": 2, "12": 3], next: 4))
     }
 
+    /// An audio switch re-runs the automatic subtitle pass while its own
+    /// replan is still loading. A pick the new plan lacks (a burned-in track
+    /// to replace or remove) must be held for that replan's exit, not dropped.
+    func testAutomaticSubtitlePickDuringAReplanIsHeldUntilItCommits() {
+        typealias Action = PlayerViewModel.AutomaticProtocolV3SubtitlePlanAction
+        func action(pick: Int?, plan: Int?, committed: Bool, replanning: Bool) -> Action {
+            PlayerViewModel.automaticProtocolV3SubtitlePlanAction(
+                pickCombinedIndex: pick, planCombinedIndex: plan,
+                loadCommitted: committed, replanInFlight: replanning
+            )
+        }
+        // Replace the burned-in track, or turn it off, mid audio replan.
+        XCTAssertEqual(action(pick: 5, plan: 3, committed: true, replanning: true), .holdUntilCommitted)
+        XCTAssertEqual(action(pick: nil, plan: 3, committed: false, replanning: true), .holdUntilCommitted)
+        // The start's own uncommitted load, as before.
+        XCTAssertEqual(action(pick: 5, plan: 3, committed: false, replanning: false), .holdUntilCommitted)
+        XCTAssertEqual(action(pick: 5, plan: 3, committed: true, replanning: false), .replan)
+        XCTAssertEqual(action(pick: 3, plan: 3, committed: true, replanning: true), .keepPlan)
+        XCTAssertEqual(action(pick: nil, plan: nil, committed: false, replanning: true), .keepPlan)
+    }
+
     func testBurnInSelectionSurvivesInventoryBeforeAndAfterLoadEstablishes() async {
         let model = PlayerViewModel()
         let plan = makePlan(selectedSubtitleIndex: 3, subtitleMode: "burn_in",
@@ -2906,7 +3036,9 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         videoCodec: String,
         audioCodec: String,
         audioTracks: [AudioTrack]? = nil,
-        subtitleTracks: [SubtitleTrack]? = nil
+        subtitleTracks: [SubtitleTrack]? = nil,
+        effectiveAudioTrackIndex: Int? = nil,
+        effectiveAudioLanguage: String? = nil
     ) -> FileVersion {
         FileVersion(
             fileId: 42,
@@ -2922,14 +3054,17 @@ final class PlaybackProtocolV3Tests: XCTestCase {
             videoTracks: nil,
             audioTracks: audioTracks,
             subtitleTracks: subtitleTracks,
-            chapters: nil
+            chapters: nil,
+            effectiveAudioTrackIndex: effectiveAudioTrackIndex,
+            effectiveAudioLanguage: effectiveAudioLanguage
         )
     }
 
     private func makeAudio(
         index: Int,
         codec: String,
-        isDefault: Bool
+        isDefault: Bool,
+        language: String = "en"
     ) -> AudioTrack {
         AudioTrack(
             index: index,
@@ -2938,7 +3073,7 @@ final class PlaybackProtocolV3Tests: XCTestCase {
             channelLayout: "5.1",
             bitrate: 640_000,
             sampleRate: 48_000,
-            language: "en",
+            language: language,
             title: codec.uppercased(),
             embeddedTitle: nil,
             isDefault: isDefault
@@ -2952,12 +3087,13 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         path: String?,
         forced: Bool = false,
         isDefault: Bool = false,
-        hearingImpaired: Bool = false
+        hearingImpaired: Bool = false,
+        language: String = "en"
     ) -> SubtitleTrack {
         SubtitleTrack(
             index: index,
             codec: codec,
-            language: "en",
+            language: language,
             title: codec.uppercased(),
             embeddedTitle: nil,
             forced: forced,

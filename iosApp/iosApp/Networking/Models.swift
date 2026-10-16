@@ -539,6 +539,10 @@ extension ItemDetail {
     var isAudiobook: Bool {
         audiobook != nil || SiloMediaType.isAudiobook(type)
     }
+
+    /// See `WatchDetail.showsForcedSubtitles`: a missing value is the
+    /// contract default, which is on.
+    var showsForcedSubtitles: Bool { effectiveShowForcedSubtitles ?? true }
 }
 
 /// A remote provider video reference (server `ItemVideoInfo`). The site
@@ -1235,6 +1239,11 @@ struct WatchDetail {
     let effectiveSubtitleMode: String?
     let effectiveShowForcedSubtitles: Bool?
     let effectiveSubtitleTrackSignature: SubtitleTrackSignature?
+
+    /// "Show forced subtitles" for this content. The server omits
+    /// `effective_show_forced_subtitles` when no stored setting applies, and
+    /// the contract default is on, as web and the Jellyfin layer read it.
+    var showsForcedSubtitles: Bool { effectiveShowForcedSubtitles ?? true }
 }
 
 // MARK: - Collections

@@ -180,21 +180,21 @@ enum DetailPlaybackFormatting {
     }
 
     /// Language of the track that `audioValueLabel` would display, used to
-    /// feed the subtitle auto-resolver (Auto mode hides subs when the audio
-    /// is already in the preferred subtitle language).
+    /// feed the subtitle auto-resolver. Resolved as the start request does
+    /// (`PlaybackSessionBridge.startAudioLanguage`), so an unlabelled track
+    /// reads as the server's effective audio language here too and the Auto
+    /// preview names the track playback starts on.
     static func resolvedAudioLanguage(
         version: FileVersion?,
         selectedAudioTrackIndex: Int?
     ) -> String? {
-        guard let version,
-              let ordinal = resolvedAudioOrdinal(
-                  version: version,
-                  selectedAudioTrackIndex: selectedAudioTrackIndex
-              ),
-              let track = version.audioTracks?[safe: ordinal] else {
-            return nil
-        }
-        return track.language
+        PlaybackSessionBridge.startAudioLanguage(
+            version: version,
+            audioOrdinal: resolvedAudioOrdinal(
+                version: version,
+                selectedAudioTrackIndex: selectedAudioTrackIndex
+            )
+        )
     }
 
     static func audioTitle(_ track: AudioTrack, ordinal: Int) -> String {
@@ -244,20 +244,45 @@ enum DetailPlaybackFormatting {
     /// version's track list. Returns the ffmpeg stream index to
     /// pre-select, `-1` for "Off", or nil when nothing points at a
     /// track in this file ("Auto" — the player's resolver decides).
+    ///
+    /// A server mode of "off" (the profile's, or a series Off) with "show
+    /// forced subtitles" on is not an explicit Off: playback starts on the
+    /// forced track in the audio language, as it does on every other entry
+    /// path and on web. So it returns nil and lets the player's
+    /// resolver pick that track. The mode wins over a stored signature, as it
+    /// does in the resolver.
     static func serverPreferredSubtitleIndex(
         version: FileVersion?,
         signature: SubtitleTrackSignature?,
-        mode: String?
+        mode: String?,
+        showForced: Bool
     ) -> Int? {
+        if SubtitleMode(rawValue: mode ?? "") == .off {
+            return showForced ? nil : -1
+        }
         if let signature,
            let tracks = version?.subtitleTracks,
            let match = bestSignatureMatch(signature, in: tracks) {
             return match.selectionIndex
         }
-        if SubtitleMode(rawValue: mode ?? "") == .off {
-            return -1
-        }
         return nil
+    }
+
+    /// Whether a subtitle picked in the detail selector survives the page
+    /// reloading, as it does when the viewer returns from the player. Off and
+    /// Auto always do. A track index belongs to one file, so a track pick
+    /// stays only while the reloaded page shows the file it was picked on and
+    /// that file still offers it. Matches tvOS, whose selector state outlives
+    /// the player.
+    static func keepsManualSubtitlePick(
+        _ index: Int?,
+        pickedFileId: Int?,
+        reloadedFileId: Int?,
+        isAvailable: (Int) -> Bool
+    ) -> Bool {
+        guard let index, index >= 0 else { return true }
+        guard let pickedFileId, pickedFileId == reloadedFileId else { return false }
+        return isAvailable(index)
     }
 
     /// A server-remembered track is useful for reflecting the server policy
@@ -268,13 +293,15 @@ enum DetailPlaybackFormatting {
         version: FileVersion?,
         signature: SubtitleTrackSignature?,
         mode: String?,
+        showForced: Bool,
         usesDeviceSettings: Bool
     ) -> Int? {
         guard !usesDeviceSettings else { return nil }
         return serverPreferredSubtitleIndex(
             version: version,
             signature: signature,
-            mode: mode
+            mode: mode,
+            showForced: showForced
         )
     }
 
@@ -326,11 +353,11 @@ enum DetailPlaybackFormatting {
     /// Preview the track the player's `SubtitleAutoResolver` would auto-select
     /// for the "Auto" (no explicit override) case, applied to the detail
     /// payload's `SubtitleTrack` list. Returns nil when Auto resolves to no
-    /// subtitles (mode off, no preference, or audio already in the preferred
-    /// language). Runs the resolver itself, with the inputs the detail page can
-    /// supply, over the candidates the start request resolves (V3 combined
-    /// order, externals first), so the preview names the track playback starts
-    /// on. The returned ordinal stays the catalog offset so "Track N" labels
+    /// subtitles (mode off with no forced track in the audio language, no
+    /// preference, or audio already in the preferred language). Runs the
+    /// resolver itself, with the inputs the detail page can supply, over the
+    /// candidates the start request resolves (V3 combined order, externals
+    /// first), so the preview names the track playback starts on. The returned ordinal stays the catalog offset so "Track N" labels
     /// match subtitleOptions. An embedded row with no index is FFmpeg stream 0
     /// (the wire omits a zero index), so it stays selectable.
     private static func autoResolvedSubtitle(
@@ -614,5 +641,29 @@ enum DetailPlaybackFormatting {
 private extension Array {
     subscript(safe index: Index) -> Element? {
         indices.contains(index) ? self[index] : nil
+    }
+}
+
+extension DetailPlaybackFormatting.SubtitleAutoContext {
+    /// The "Auto" subtitle preview context for the selected version and audio
+    /// track.
+    init(
+        version: FileVersion?,
+        selectedAudioTrackIndex: Int?,
+        preferredLanguage: String?,
+        mode: String?,
+        signature: SubtitleTrackSignature?,
+        showForced: Bool
+    ) {
+        self.init(
+            preferredLanguage: preferredLanguage,
+            mode: mode,
+            signature: signature,
+            audioLanguage: DetailPlaybackFormatting.resolvedAudioLanguage(
+                version: version,
+                selectedAudioTrackIndex: selectedAudioTrackIndex
+            ),
+            showForced: showForced
+        )
     }
 }
