@@ -1994,7 +1994,7 @@ private struct SubtitlesPane: View {
             }
             if viewModel.backendCapabilities.supportsSubtitleStyling {
                 HUDToggleRow(
-                    label: "Save for this Apple TV",
+                    label: "Only on this Apple TV",
                     isOn: viewModel.settings.subtitleUsesDeviceAppearanceOverride
                 ) { enabled in
                     Task {

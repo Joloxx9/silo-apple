@@ -145,6 +145,8 @@ public enum SettingKey: String, CaseIterable, Sendable {
     case uiLibraryPageState = "ui.library_page_state"
     /// Next up episodes
     case uiNextUpMode = "ui.next_up_mode"
+    /// Show new episodes first
+    case uiNextUpNewReleasesFirst = "ui.next_up_new_releases_first"
     /// Remember library view
     case uiRememberLibraryPageState = "ui.remember_library_page_state"
     /// Pinned sidebar items
@@ -166,7 +168,7 @@ public enum SettingKey: String, CaseIterable, Sendable {
 }
 
 public extension SettingKey {
-    static let revision = 17
+    static let revision = 19
 
     /// Keys the server stores. The rest never leave the device.
     static let remote: [SettingKey] = [
@@ -222,6 +224,7 @@ public extension SettingKey {
         .uiLibraryOrder,
         .uiLibraryPageState,
         .uiNextUpMode,
+        .uiNextUpNewReleasesFirst,
         .uiRememberLibraryPageState,
         .uiSidebarPins,
         .uiTextScale,

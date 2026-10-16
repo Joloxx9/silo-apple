@@ -127,8 +127,10 @@ enum DeinterlaceFieldRatePreference: String, CaseIterable {
 }
 
 extension SettingKey {
-    /// The device-scoped settings this client syncs. Generated contract keys,
-    /// so every key this client sends is one the server's manifest declares.
+    /// The settings this client syncs. Generated contract keys, so every key
+    /// this client sends is one the server's manifest declares. Most are
+    /// saved for this device; subtitle appearance and timing are saved for
+    /// the profile unless this device keeps its own.
     ///
     /// Also the order a flush sends them in: `playback.preferred_quality`
     /// precedes `playback.max_bitrate_kbps` so the two axes of one compound
@@ -448,19 +450,20 @@ final class PlayerSettings {
         }
     }
 
-    private(set) var subtitleAppearance: SubtitleAppearance {
+    /// This device's own appearance (`profile_device`), used while
+    /// ``subtitleUsesDeviceAppearanceOverride`` is on.
+    private(set) var deviceSubtitleAppearance: SubtitleAppearance {
         didSet {
             guard !isLoadingCache else { return }
             defaults.set(
-                subtitleAppearance.sanitized().jsonString,
+                deviceSubtitleAppearance.sanitized().jsonString,
                 forKey: Self.cacheKey(Keys.subtitleAppearance)
             )
         }
     }
 
-    /// Server/profile fallback used while this device's custom appearance
-    /// override is off. Kept separate so refreshing the effective value does
-    /// not destroy the user's locally cached custom style.
+    /// The profile's appearance (or the contract default), which every device
+    /// of the profile uses unless it keeps its own.
     private var inheritedSubtitleAppearance: SubtitleAppearance {
         didSet {
             guard !isLoadingCache else { return }
@@ -500,12 +503,22 @@ final class PlayerSettings {
     var subtitleSystemAppearance: SubtitleAppearance = SystemCaptionAppearance.current()
     var subtitleSystemSelectionPreferences = SystemCaptionSelectionPreferences.current()
 
+    /// The Silo appearance in effect on this device: its own while the
+    /// device override is on, otherwise the profile's. Every appearance editor
+    /// starts from this, so an edit never starts from a stale device copy.
+    var subtitleAppearance: SubtitleAppearance {
+        subtitleUsesDeviceAppearanceOverride ? deviceSubtitleAppearance : inheritedSubtitleAppearance
+    }
+
     /// The appearance the player should actually render with.
     var effectiveSubtitleAppearance: SubtitleAppearance {
-        if subtitleMatchesSystemAppearance { return subtitleSystemAppearance }
-        return subtitleUsesDeviceAppearanceOverride
-            ? subtitleAppearance
-            : inheritedSubtitleAppearance
+        subtitleMatchesSystemAppearance ? subtitleSystemAppearance : subtitleAppearance
+    }
+
+    /// Where a subtitle display edit (appearance or timing) is saved: this
+    /// device only while its override is on, otherwise the profile.
+    var subtitleDisplayWriteScope: PlayerSettingWriteScope {
+        subtitleUsesDeviceAppearanceOverride ? .profileDevice : .profile
     }
 
     private(set) var subtitleSyncMs: Int {
@@ -635,7 +648,7 @@ final class PlayerSettings {
             key: Keys.trueHDAtmosEnabled,
             defaultValue: true
         )
-        subtitleAppearance = SubtitleAppearance.decode(from: defaults.string(forKey: Self.cacheKey(Keys.subtitleAppearance)))
+        deviceSubtitleAppearance = SubtitleAppearance.decode(from: defaults.string(forKey: Self.cacheKey(Keys.subtitleAppearance)))
         inheritedSubtitleAppearance = SubtitleAppearance.decode(
             from: defaults.string(forKey: Self.cacheKey(Keys.inheritedSubtitleAppearance))
         )
@@ -780,6 +793,11 @@ final class PlayerSettings {
             if flusher.hasRevisionGatedWrites {
                 await flushPendingDeviceSettings()
             }
+            if await clearLeftoverDeviceSubtitleOffsetIfNeeded(scopeID: refreshScopeID) {
+                // Repaint with the offset this device now inherits. The clear
+                // is decided once per scope, so this does not recurse again.
+                await refreshFromServer()
+            }
             return .refreshed
         } catch SettingsAPIError.serverUpgradeRequired {
             return .serverUpgradeRequired
@@ -916,21 +934,38 @@ final class PlayerSettings {
         enqueueDeviceValue(.orientationMode, value: .string(mode.rawValue))
     }
 
+    /// Saved like the appearance: for the profile, unless this device keeps
+    /// its own subtitle display settings. A server older than manifest
+    /// revision 19 only stores the offset per device, so there it stays a
+    /// device value; while the revision is unknown the flusher decides at send
+    /// time.
     func setSubtitleSyncMs(_ milliseconds: Int) {
         subtitleSyncMs = max(-10000, min(milliseconds, 10000))
-        enqueueDeviceValue(.subtitleSyncMs, value: .int(subtitleSyncMs))
+        let value = SettingJSONValue.int(subtitleSyncMs)
+        if subtitleDisplayWriteScope == .profileDevice || !serverAcceptsProfileScope(for: .subtitleSyncMs) {
+            enqueueDeviceValue(.subtitleSyncMs, value: value)
+        } else {
+            enqueueProfileValue(.subtitleSyncMs, value: value)
+        }
     }
 
-    /// Applies a device appearance edit and queues it for the server; the
-    /// flusher's debounce sends it. `setSubtitleAppearance(_:)` is this plus an
+    /// Applies an appearance edit and queues it for the server; the flusher's
+    /// debounce sends it. `setSubtitleAppearance(_:)` is this plus an
     /// immediate flush.
+    ///
+    /// Saved for the profile, so it follows the profile to every device,
+    /// unless this device keeps its own appearance (the device override is
+    /// on), in which case only this device's value changes.
     func stageSubtitleAppearance(_ appearance: SubtitleAppearance) {
         let sanitized = appearance.sanitized()
-        subtitleAppearance = sanitized
-        subtitleUsesDeviceAppearanceOverride = true
         // A manual edit takes over from the system-matching source.
         subtitleMatchesSystemAppearance = false
-        enqueueSubtitleAppearance(sanitized)
+        if subtitleUsesDeviceAppearanceOverride {
+            deviceSubtitleAppearance = sanitized
+        } else {
+            inheritedSubtitleAppearance = sanitized
+        }
+        enqueueSubtitleAppearance(sanitized, scope: subtitleDisplayWriteScope)
     }
 
     @MainActor
@@ -951,19 +986,106 @@ final class PlayerSettings {
         subtitleMatchesSystemAppearance = enabled
     }
 
+    /// Turn this device's own subtitle display settings on or off.
+    ///
+    /// On: the device keeps a copy of the appearance on screen now, and later
+    /// appearance and timing edits change only this device. Off: this
+    /// device's own values are deleted so the profile's apply again.
     @MainActor
     func setSubtitleDeviceOverrideEnabled(_ enabled: Bool) async {
         guard enabled != subtitleUsesDeviceAppearanceOverride else { return }
-        subtitleUsesDeviceAppearanceOverride = enabled
         if enabled {
-            enqueueSubtitleAppearance(subtitleAppearance.sanitized())
+            // Start from what is on screen, not from a device copy cached by
+            // an earlier override, so turning this on changes nothing visible.
+            let current = inheritedSubtitleAppearance.sanitized()
+            deviceSubtitleAppearance = current
+            subtitleUsesDeviceAppearanceOverride = true
+            enqueueSubtitleAppearance(current, scope: .profileDevice)
             await flushPendingDeviceSettings()
             return
         }
 
+        subtitleUsesDeviceAppearanceOverride = false
+        var cleared: [SettingKey] = [.subtitleAppearance]
+        // The device's own offset goes too, but only where the profile can
+        // hold one: on an older server the device value is the only offset.
+        // Before the revision is known (an offline launch) the flusher makes
+        // that call once a read reports it. Sent whether or not
+        // ``deviceOverriddenKeys`` lists it, for the reason
+        // ``enqueueProfileValue(_:value:)`` gives; no device offset is success.
+        let clearsOffset = serverAcceptsProfileScope(for: .subtitleSyncMs)
+        if clearsOffset {
+            cleared.append(.subtitleSyncMs)
+        }
+        // A first refresh for this scope must not import these keys straight
+        // back as device values.
+        if let scopeID = Self.currentScopeIdentifier {
+            retireMigration(of: cleared, for: scopeID)
+        }
         enqueueDeviceClear(.subtitleAppearance)
+        if clearsOffset {
+            deviceOverriddenKeys.remove(.subtitleSyncMs)
+            flusher.enqueueDelete(.subtitleSyncMs, onlyWhereProfileScoped: true)
+        }
         await flushPendingDeviceSettings()
         await refreshFromServer()
+    }
+
+    /// Clear a subtitle offset an older build left on this device, once per
+    /// settings scope. Those builds saved every Delay change as this device's
+    /// own value without turning the device override on, so on a server that
+    /// stores the offset per profile it kept hiding the profile's offset while
+    /// the screen said the profile's applied. A device that keeps its own
+    /// subtitle settings (the override is on) keeps its offset.
+    ///
+    /// Decided only from a read of a revision 19 or later server for this
+    /// scope. The clear goes through the journal like any other, so a failed
+    /// request is retried, and a newer offset edit replaces it. Returns true
+    /// when the clear reached the server.
+    @MainActor
+    private func clearLeftoverDeviceSubtitleOffsetIfNeeded(scopeID: String) async -> Bool {
+        let doneKey = Self.leftoverSubtitleOffsetClearKey(for: scopeID)
+        guard !defaults.bool(forKey: doneKey),
+              (Self.currentScopeIdentifier ?? "") == scopeID,
+              manifestRevisionScopeID == scopeID,
+              let knownManifestRevision,
+              SettingKey.subtitleSyncMs.acceptsProfileScope(atRevision: knownManifestRevision) else {
+            return false
+        }
+        // The one-time import may still push this device's legacy values;
+        // decide after it has run.
+        if let currentScope = Self.currentScopeIdentifier, !isMigrationComplete(for: currentScope) {
+            return false
+        }
+        // A timing write still owed can be an older build's device offset
+        // that lands later; decide once it has settled.
+        guard !flusher.unsettledKeys.contains(.subtitleSyncMs) else {
+            return false
+        }
+        defaults.set(true, forKey: doneKey)
+        guard !subtitleUsesDeviceAppearanceOverride,
+              deviceOverriddenKeys.contains(.subtitleSyncMs) else {
+            return false
+        }
+        // Gated on the revision when sent, like the override switch's clear:
+        // a retry after a relaunch must not delete the only offset a server
+        // rolled back below revision 19 keeps.
+        deviceOverriddenKeys.remove(.subtitleSyncMs)
+        flusher.enqueueDelete(.subtitleSyncMs, onlyWhereProfileScoped: true)
+        await flushPendingDeviceSettings()
+        return !flusher.unsettledKeys.contains(.subtitleSyncMs)
+    }
+
+    private static func leftoverSubtitleOffsetClearKey(for scopeID: String) -> String {
+        "player.leftoverDeviceSubtitleOffsetCleared.\(scopeID)"
+    }
+
+    /// Whether the server is known to reject `key` at `profile` scope. An
+    /// unknown revision counts as accepting: the flusher holds the write until
+    /// the revision is known and falls back to the device row then.
+    private func serverAcceptsProfileScope(for key: SettingKey) -> Bool {
+        guard let knownManifestRevision else { return true }
+        return key.acceptsProfileScope(atRevision: knownManifestRevision)
     }
 
     /// Whether this device holds its own value for `setting`, rather than
@@ -1031,6 +1153,23 @@ final class PlayerSettings {
     private func enqueueDeviceValue(_ key: SettingKey, value: SettingJSONValue) {
         deviceOverriddenKeys.insert(key)
         flusher.enqueue(key, value: value)
+    }
+
+    /// Queue the profile's value for `key`. A value this device holds for the
+    /// key would keep hiding it here, so that is deleted in the same write.
+    ///
+    /// Always, not only when ``deviceOverriddenKeys`` lists the key: that set
+    /// is only as fresh as the last refresh, and an edit made before one (an
+    /// offline launch, a reinstall) cannot see a device value already on the
+    /// server. The flusher treats "no device value" as success.
+    private func enqueueProfileValue(_ key: SettingKey, value: SettingJSONValue) {
+        deviceOverriddenKeys.remove(key)
+        // An unfinished one-time import must not later bring back this
+        // device's older cached value as a device value over this edit.
+        if let scopeID = Self.currentScopeIdentifier {
+            retireMigration(of: [key], for: scopeID)
+        }
+        flusher.enqueue(key, value: value, scope: .profile, clearingDeviceValue: true)
     }
 
     /// Queue clearing this device's own value for `key`, so it inherits again.
@@ -1117,13 +1256,16 @@ final class PlayerSettings {
         on effectiveByKey: [SettingKey: EffectiveSettingValue]
     ) -> [SettingKey: EffectiveSettingValue] {
         var merged = effectiveByKey
-        for (key, value) in flusher.unsettledValues() {
+        for (key, unsettled) in flusher.unsettledScopedValues() {
+            // Painted at the scope it is being written to, so a pending
+            // profile edit does not read as this device's own value.
+            let scope = unsettled.scope.settingScope
             merged[key] = EffectiveSettingValue(
                 key: key.rawValue,
-                value: value,
-                source: .scope(.profileDevice),
+                value: unsettled.value,
+                source: .scope(scope),
                 suggestedValues: effectiveByKey[key]?.suggestedValues,
-                scope: .profileDevice
+                scope: scope
             )
         }
         return merged
@@ -1186,14 +1328,17 @@ final class PlayerSettings {
     /// keys (`fontSize`, `backgroundOpacity`) reach the server verbatim.
     /// Members an older server does not know are removed by the flusher at
     /// send time, not here (see ``SettingKey/revisionGatedMembers``).
-    private func enqueueSubtitleAppearance(_ appearance: SubtitleAppearance) {
+    private func enqueueSubtitleAppearance(_ appearance: SubtitleAppearance, scope: PlayerSettingWriteScope) {
         guard let value = try? SettingJSONValue.encoding(appearance) else {
             // Unreachable for a struct of scalars, and dropping the write is
             // the right failure: the server would reject a value that cannot
             // be encoded, and the local value is already applied.
             return
         }
-        enqueueDeviceValue(.subtitleAppearance, value: value)
+        switch scope {
+        case .profile: enqueueProfileValue(.subtitleAppearance, value: value)
+        case .profileDevice: enqueueDeviceValue(.subtitleAppearance, value: value)
+        }
     }
 
     /// Adopt a batched resolution from the server.
@@ -1266,6 +1411,14 @@ final class PlayerSettings {
             return
         }
         let hasDeviceOverride = entry.scope == .profileDevice
+        if hasDeviceOverride && flusher.unsettledClears.contains(.subtitleAppearance) {
+            // The answer still shows the device value a clear on its way is
+            // removing, and says nothing about the profile's. The override
+            // stays off, so the next edit goes to the profile as the user
+            // chose rather than back onto this device.
+            subtitleUsesDeviceAppearanceOverride = false
+            return
+        }
         subtitleUsesDeviceAppearanceOverride = hasDeviceOverride
         // A stored appearance is a sparse override the schema merges over the
         // contract default, and SubtitleAppearance's decoder already fills each
@@ -1273,7 +1426,7 @@ final class PlayerSettings {
         // rather than resetting the properties it omits.
         let appearance = ((try? entry.value.decoded(as: SubtitleAppearance.self)) ?? .default).sanitized()
         if hasDeviceOverride {
-            subtitleAppearance = appearance
+            deviceSubtitleAppearance = appearance
         } else {
             inheritedSubtitleAppearance = appearance
         }
@@ -1471,7 +1624,7 @@ final class PlayerSettings {
             key: Keys.subtitleMatchesSystemAppearance,
             defaultValue: false
         )
-        subtitleAppearance = SubtitleAppearance.decode(from: defaults.string(forKey: Self.cacheKey(Keys.subtitleAppearance)))
+        deviceSubtitleAppearance = SubtitleAppearance.decode(from: defaults.string(forKey: Self.cacheKey(Keys.subtitleAppearance)))
         inheritedSubtitleAppearance = SubtitleAppearance.decode(
             from: defaults.string(forKey: Self.cacheKey(Keys.inheritedSubtitleAppearance))
         )

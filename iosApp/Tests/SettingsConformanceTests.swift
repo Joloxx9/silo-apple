@@ -403,6 +403,26 @@ final class SettingsConformanceTests: XCTestCase {
         }
     }
 
+    /// A scope added to a key after the key itself is tagged in the manifest
+    /// as `{ "scope": "profile", "introduced_in": N }`. The flusher's
+    /// hand-kept `profileScopeRevision` must name the same revision for every
+    /// key, and nothing for a key whose profile scope is untagged.
+    func testProfileScopeRevisionsMatchTheVendoredManifest() throws {
+        let definitions = try rawDefinitions()
+        for key in SettingKey.allCases {
+            guard let definition = definitions[key.rawValue] else { continue }
+            let scopes = definition["allowed_scopes"] as? [Any] ?? []
+            let tagged = scopes.compactMap { $0 as? [String: Any] }
+                .first { $0["scope"] as? String == "profile" }
+            XCTAssertEqual(
+                key.profileScopeRevision,
+                tagged?["introduced_in"] as? Int,
+                key.rawValue
+            )
+        }
+        XCTAssertEqual(SettingKey.playerSubtitleSyncMs.profileScopeRevision, 19)
+    }
+
     /// A batch read fails as a whole when one of its keys is newer than the
     /// server, so a feature with no per-key fallback must only read keys
     /// every accepted server serves. The player batch carries

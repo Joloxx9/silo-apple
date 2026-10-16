@@ -198,7 +198,7 @@ struct PlayerSettingsSheet: View {
                 ))
                 .tint(.siloSwitchOn)
 
-                Toggle("Save for this device and profile", isOn: Binding(
+                Toggle("Only on this device", isOn: Binding(
                     get: { viewModel.settings.subtitleUsesDeviceAppearanceOverride },
                     set: { enabled in
                         Task { await viewModel.setSubtitleDeviceOverrideEnabled(enabled) }

@@ -354,10 +354,13 @@ struct TVSettingsToggleRow: View {
 /// owner is responsible for ignoring edits until `enabled` is true.
 struct TVSettingsNestedGroup<Content: View>: View {
     let enabled: Bool
+    /// What VoiceOver says while the group is locked: how to unlock it.
+    let disabledHint: String
     let content: Content
 
-    init(enabled: Bool, @ViewBuilder content: () -> Content) {
+    init(enabled: Bool, disabledHint: String, @ViewBuilder content: () -> Content) {
         self.enabled = enabled
+        self.disabledHint = disabledHint
         self.content = content()
     }
 
@@ -376,7 +379,7 @@ struct TVSettingsNestedGroup<Content: View>: View {
         )
         .padding(.leading, 24)
         .opacity(enabled ? 1 : 0.42)
-        .accessibilityHint(enabled ? "" : "Turn on the parent setting to make changes")
+        .accessibilityHint(enabled ? "" : disabledHint)
     }
 }
 
