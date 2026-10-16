@@ -231,6 +231,7 @@ extension FileVersion {
         self.editionKey = value.editionKey
         self.effectiveAudioTrackIndex = try value.effectiveAudioTrackIndex.map { try catalogLegacyInt($0) }
         self.effectiveAudioLanguage = value.effectiveAudioLanguage
+        self.trickplayAvailable = nil
     }
 }
 
@@ -261,6 +262,7 @@ extension FileVersion {
         self.editionKey = value.editionKey
         self.effectiveAudioTrackIndex = try value.effectiveAudioTrackIndex.map { try catalogLegacyInt($0) }
         self.effectiveAudioLanguage = value.effectiveAudioLanguage
+        self.trickplayAvailable = value.trickplayAvailable
     }
 }
 
@@ -503,5 +505,39 @@ extension Library {
     init(v2 value: APIv2UserLibrary) throws {
         self.init(id: try catalogLegacyID(value.id), name: value.name, type: value.type,
                   sortOrder: value.sortOrder, posterUrl: value.posterUrl)
+    }
+}
+
+extension ServerTrickplay {
+    init(v2 value: APIv2CatalogRead.WatchTrickplay) throws {
+        fileId = try catalogLegacyID(value.fileId)
+        guard value.intervalMs > 0, value.thumbnailWidth > 0, value.thumbnailHeight > 0,
+              value.tileColumns > 0, value.tileRows > 0, value.thumbnailCount > 0 else {
+            throw InvalidManifest.geometry
+        }
+        interval = Double(value.intervalMs) / 1000
+        thumbnailWidth = try catalogLegacyInt(value.thumbnailWidth)
+        thumbnailHeight = try catalogLegacyInt(value.thumbnailHeight)
+        columns = try catalogLegacyInt(value.tileColumns)
+        rows = try catalogLegacyInt(value.tileRows)
+        count = try catalogLegacyInt(value.thumbnailCount)
+        let urls = value.sheets.sorted { $0.index < $1.index }.compactMap { sheet -> URL? in
+            guard let url = URL(string: sheet.url),
+                  ["http", "https"].contains(url.scheme?.lowercased() ?? "") else { return nil }
+            return url
+        }
+        // A sheet's size in pixels must fit an Int; checked so a bad manifest
+        // is refused rather than trapping on overflow.
+        let (perSheet, tileOverflow) = columns.multipliedReportingOverflow(by: rows)
+        let (_, widthOverflow) = columns.multipliedReportingOverflow(by: thumbnailWidth)
+        let (_, heightOverflow) = rows.multipliedReportingOverflow(by: thumbnailHeight)
+        guard !tileOverflow, !widthOverflow, !heightOverflow else {
+            throw InvalidManifest.geometry
+        }
+        guard urls.count == value.sheets.count, urls.count == 1 + (count - 1) / perSheet else {
+            throw InvalidManifest.sheets
+        }
+        sheetURLs = urls
+        expiresAt = value.expiresAt
     }
 }

@@ -297,6 +297,14 @@ actor SiloAPI {
         return detail
     }
 
+    /// The seek-bar previews of `fileId`, one of `contentId`'s versions.
+    func watchTrickplay(contentId: String, fileId: Int) async throws -> ServerTrickplay {
+        let auth = try await detailReadAuth()
+        let manifest = try ServerTrickplay(v2: try await apiV2Client.watchTrickplay(id: contentId, fileId: fileId, auth: auth))
+        try await requireCurrentOwner(auth)
+        return manifest
+    }
+
     func person(id: String) async throws -> Person {
         let auth = try await detailReadAuth()
         let person = try Person(catalog: try await apiV2Client.catalogPerson(id: id, auth: auth))

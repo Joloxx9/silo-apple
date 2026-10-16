@@ -286,6 +286,12 @@ class PlayerViewModel {
     @ObservationIgnored
     private var pendingProtocolV3TrackChange: QueuedProtocolV3TrackChange?
     private let scrubPreviewProvider: AetherScrubPreviewProvider
+    /// Fetches the server's seek-bar previews for `serverTrickplayKey`, the
+    /// item and file they belong to.
+    @ObservationIgnored
+    private var serverTrickplayTask: Task<Void, Never>?
+    @ObservationIgnored
+    private var serverTrickplayKey: String?
     var assSubtitles: ASSSubtitleSession { aetherPlaybackController.assSubtitles }
     var subtitleCueHold: SubtitleCueHold { aetherPlaybackController.cueHold }
     var aetherEngine: AetherEngine { aetherPlaybackController.engine }
@@ -310,8 +316,70 @@ class PlayerViewModel {
             aetherPlaybackController.prepareForReplacement()
         } else {
             aetherPlaybackController.stop()
+            clearServerTrickplay()
         }
         return previewShutdown
+    }
+
+    /// Hands the scrub previews the server's thumbnails for the file being
+    /// played, when its version has them. A reload of the same file, such as
+    /// a replan or quality switch, keeps the sheets already fetched.
+    private func loadServerTrickplay(for prepared: PreparedPlayback) {
+        let version = prepared.selectedVersion
+        guard version.trickplayAvailable == true else {
+            clearServerTrickplay()
+            return
+        }
+        let contentId = prepared.watchDetail.contentId
+        let fileId = version.fileId
+        let key = "\(contentId)#\(fileId)"
+        guard key != serverTrickplayKey else { return }
+        clearServerTrickplay()
+        serverTrickplayKey = key
+        serverTrickplayTask = Task { [weak self] in
+            let trickplay: ServerTrickplay
+            do {
+                trickplay = try await SiloAPI.shared.watchTrickplay(contentId: contentId, fileId: fileId)
+            } catch {
+                // A cancelled request was cleared, and the key may already
+                // name its replacement.
+                guard !Task.isCancelled else { return }
+                // Stills from the player's cache remain the fallback. Forget
+                // the key so a later load of the same file tries again.
+                Self.logger.info("Seek-bar previews unavailable: \(error.localizedDescription, privacy: .public)")
+                if let self, self.serverTrickplayKey == key { self.serverTrickplayKey = nil }
+                return
+            }
+            // The prefetch does not hold the view model.
+            let sheets = self?.installServerTrickplay(trickplay, contentId: contentId, key: key)
+            await sheets?.prefetch()
+        }
+    }
+
+    /// Hands the scrub previews the sheets for `key`, unless the load was
+    /// cleared or replaced meanwhile.
+    private func installServerTrickplay(
+        _ trickplay: ServerTrickplay,
+        contentId: String,
+        key: String
+    ) -> ServerTrickplaySheets? {
+        guard !Task.isCancelled, serverTrickplayKey == key else { return nil }
+        let fileId = trickplay.fileId
+        let sheets = ServerTrickplaySheets(trickplay) {
+            try? await SiloAPI.shared.watchTrickplay(contentId: contentId, fileId: fileId)
+        }
+        scrubPreviewProvider.serverPreviews = sheets
+        return sheets
+    }
+
+    private func clearServerTrickplay() {
+        serverTrickplayTask?.cancel()
+        serverTrickplayTask = nil
+        serverTrickplayKey = nil
+        if let sheets = scrubPreviewProvider.serverPreviews {
+            Task { await sheets.shutdown() }
+        }
+        scrubPreviewProvider.serverPreviews = nil
     }
 
     var isPlaying = false
@@ -3964,6 +4032,7 @@ class PlayerViewModel {
         // settled and deferred track picks may drive the engine.
         establishedAetherLoadEpoch = loadEpoch
         scrubPreviewProvider.activate(spec)
+        loadServerTrickplay(for: prepared)
         adoptAetherInventory()
         reapplyAetherGain()
 
