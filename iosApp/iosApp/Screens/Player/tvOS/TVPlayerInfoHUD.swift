@@ -808,12 +808,18 @@ private struct VideoPane: View {
                     VStack(spacing: 2) {
                         if viewModel.hasQualityChoice {
                             HUDSettingRow(label: "Quality", value: qualityValue) {
+                                // The row stays focusable (disabling a focused
+                                // row would move focus); it reads "Switching..."
+                                // and opens nothing until the switch lands.
+                                guard !viewModel.isQualitySwitching else { return }
                                 presentPicker(
                                     for: .quality,
                                     HUDPickerPresentation(
                                         title: "Quality",
                                         options: qualityOptions,
-                                        selection: viewModel.activeQualityId,
+                                        // No row is checked while a fixed saved
+                                        // resolution sets the quality.
+                                        selection: viewModel.highlightedQualityOptionId ?? "",
                                         onSelect: { viewModel.switchQuality($0) }
                                     )
                                 )

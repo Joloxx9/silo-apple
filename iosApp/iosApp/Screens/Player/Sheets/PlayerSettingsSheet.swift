@@ -110,7 +110,7 @@ struct PlayerSettingsSheet: View {
                                 }
                             }
                             Spacer()
-                            if option.id == viewModel.activeQualityId {
+                            if option.id == viewModel.highlightedQualityOptionId {
                                 Image(systemName: "checkmark")
                                     .fontWeight(.semibold)
                                     .foregroundStyle(.tint)
@@ -118,6 +118,7 @@ struct PlayerSettingsSheet: View {
                         }
                         .contentShape(Rectangle())
                     }
+                    .disabled(viewModel.isQualitySwitching)
                 }
             } footer: {
                 if viewModel.isQualitySwitching {
