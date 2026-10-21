@@ -4539,7 +4539,12 @@ class PlayerViewModel {
     func applySettingsToPlayer() {
         // Aether starts a paused player on any rate; a party member's rate is
         // the room's to set, and only while it plays.
-        if isWatchPartyPlayback { syncWatchPartyRate() } else { aetherPlaybackController.setSpeed(effectivePlaybackSpeed) }
+        // A held 2× keeps its rate; releasing the hold restores the speed.
+        if isWatchPartyPlayback {
+            syncWatchPartyRate()
+        } else if !isHoldFastForwarding {
+            aetherPlaybackController.setSpeed(effectivePlaybackSpeed)
+        }
         aetherPlaybackController.engine.videoGravity = settings.videoGravity.avGravity
     }
 
@@ -5431,7 +5436,12 @@ class PlayerViewModel {
                 // play — the init request is already in flight and its
                 // result is what we want anyway. If the task already
                 // finished, this returns immediately.
-                await self.settingsRefreshTask?.value
+                // A download plays on the cached settings instead: with a
+                // network but no answering server, the refresh only ends at
+                // the request timeout. It still applies when it finishes.
+                if request.offlineDownloadId == nil {
+                    await self.settingsRefreshTask?.value
+                }
                 try self.requireCurrentStreamLoad(currentStreamLoadGeneration)
                 guard currentFreshLoadGeneration == self.freshLoadGeneration else {
                     throw CancellationError()
