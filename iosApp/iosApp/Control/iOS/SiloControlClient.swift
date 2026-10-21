@@ -32,6 +32,10 @@ final class SiloControlClient {
     private(set) var isConnecting = false
     var errorMessage: String?
     var isShowingRemoteControl = false
+    /// A launch waiting for the user to agree to replace another profile's
+    /// title on the TV.
+    private(set) var pendingReplace: SiloControlPendingReplace?
+    private var resumeTokens = SiloControlResumeTokens()
 
     let clock = RemotePlaybackClock()
 
@@ -85,7 +89,15 @@ final class SiloControlClient {
     /// The current session was attached silently (auto-resume) and the user
     /// hasn't engaged with it yet. Such a session lets go quietly when the TV
     /// goes idle, so it never flips the TV into the standby takeover screen.
-    private var sessionIsAutoResumed = false
+    /// The hello tells the TV so (`passive`); once the user engages, the TV
+    /// hears about it through `presence` where it supports that.
+    private var sessionIsAutoResumed = false {
+        didSet {
+            guard oldValue, !sessionIsAutoResumed, isHandshakeComplete,
+                  handshake.tvSupports(SiloControlFeature.presence) else { return }
+            session?.enqueue(.presence(SiloControlPresence(passive: false)))
+        }
+    }
     /// Guards against a double-tap on the remote button sending two `.launch`
     /// frames (and presenting the player twice) for the same in-flight
     /// connection.
@@ -138,7 +150,10 @@ final class SiloControlClient {
     /// Never falls through to local playback on its own: once the user has a
     /// TV engaged, a failed launch is reported on the remote cover instead.
     @discardableResult
-    func launchOnEngagedTV(_ request: SiloControlPlaybackRequest) async -> Bool {
+    func launchOnEngagedTV(
+        _ request: SiloControlPlaybackRequest,
+        replaceConsent: SiloControlReplaceConsent? = nil
+    ) async -> Bool {
         guard remotePlaybackEngaged else { return false }
         if isReconnecting {
             isShowingRemoteControl = true
@@ -154,7 +169,7 @@ final class SiloControlClient {
                 return true
             }
         }
-        await launch(request)
+        await launch(request, replaceConsent: replaceConsent)
         return true
     }
 
@@ -249,7 +264,7 @@ final class SiloControlClient {
         await launch(request)
     }
 
-    func launch(_ request: SiloControlPlaybackRequest) async {
+    func launch(_ request: SiloControlPlaybackRequest, replaceConsent: SiloControlReplaceConsent? = nil) async {
         guard let activeServer = ServerRegistry.shared.activeServer,
               let profileId = ServerRegistry.shared.activeProfileId,
               !profileId.isEmpty else {
@@ -268,7 +283,11 @@ final class SiloControlClient {
 
         isConnecting = true
         errorMessage = nil
+        pendingReplace = nil
         isShowingRemoteControl = true
+        // Sending a title is engaging with the TV, even on a session that
+        // attached silently; the TV hears it through `presence`.
+        sessionIsAutoResumed = false
 
         let connectionId = self.connectionId
         let handshake = self.handshake
@@ -281,6 +300,7 @@ final class SiloControlClient {
                 server: activeServer,
                 profileId: profileId,
                 profileName: profileName,
+                replaceConsent: replaceConsent,
                 session: session,
                 handshake: handshake
             )
@@ -291,23 +311,54 @@ final class SiloControlClient {
             adoptEffectiveTarget(server: activeServer)
             try await session.send(.launch(SiloControlLaunchRequest(serverId: activeServer.id, playback: request)))
             isConnecting = false
+        } catch SiloControlHandoffError.replaceConfirmationRequired(let nowPlaying, let message) {
+            // Nothing changed on the TV; the session stays up while the user
+            // decides.
+            guard self.connectionId == connectionId else { return }
+            isConnecting = false
+            pendingReplace = SiloControlPendingReplace(
+                request: request, nowPlaying: nowPlaying,
+                tvName: activeTarget?.name ?? "the TV", fallbackMessage: message
+            )
+        } catch SiloControlHandoffError.cancelled(let message)
+                    where handshake.tvSupports(SiloControlFeature.multiController) {
+            // A TV that keeps several controllers keeps this one too when it
+            // turns a handoff down, e.g. because another device's play
+            // superseded it. Report it; the session stays.
+            guard self.connectionId == connectionId else { return }
+            isConnecting = false
+            errorMessage = message
         } catch {
             fail(error.localizedDescription, connectionId: connectionId)
         }
+    }
+
+    /// The user agreed to replace what the TV is playing.
+    func confirmReplace() {
+        guard let pending = pendingReplace else { return }
+        pendingReplace = nil
+        let consent = SiloControlReplaceConsent(contentId: pending.nowPlaying?.contentId)
+        Task { await launch(pending.request, replaceConsent: consent) }
+    }
+
+    func cancelReplace() {
+        pendingReplace = nil
     }
 
     private func prepareRemoteIdentity(
         server: ServerEntry,
         profileId: String,
         profileName: String?,
+        replaceConsent: SiloControlReplaceConsent?,
         session: SiloControlSession,
         handshake: SiloControlHandshake
     ) async throws -> SiloControlHandoffReady {
+        let tvId = activeTarget?.id
         // The deployment's other addresses let a TV that can't reach the
         // phone's URL still prepare the profile. Best effort: without them
         // the TV uses `serverURL` as-is. Fetched while the version settles.
         async let endpointsFetch = Self.offeredEndpoints(for: server)
-        guard try await handshake.negotiatedVersion(within: Self.helloWait) == 2 else {
+        guard let version = try await handshake.negotiatedVersion(within: Self.helloWait), version >= 2 else {
             throw SiloControlHandoffError.updateRequired
         }
         // The server-side approval runs under the owner captured here: the
@@ -334,8 +385,15 @@ final class SiloControlClient {
             profileId: profileId,
             profileName: profileName,
             serverIdentity: server.verifiedServerId,
-            serverEndpoints: endpoints
+            serverEndpoints: endpoints,
+            resumeToken: tvId.flatMap { resumeTokens.token(tvId: $0, serverId: server.id, profileId: profileId) },
+            replaceConfirmed: replaceConsent != nil ? true : nil,
+            replacingContentId: replaceConsent?.contentId
         )))
+        func remember(_ ready: SiloControlHandoffReady) {
+            guard let tvId else { return }
+            resumeTokens.store(ready.resumeToken, tvId: tvId, serverId: server.id, profileId: profileId)
+        }
 
         // A TV that already holds this phone's profile answers `handoff_ready`
         // (reused) without a challenge.
@@ -344,6 +402,7 @@ final class SiloControlClient {
         case .ready(let ready):
             try ensureActiveIdentity(serverId: server.id, profileId: profileId)
             handshake.endHandoff()
+            remember(ready)
             return ready
         case .challenge(let issued):
             challenge = issued
@@ -367,6 +426,7 @@ final class SiloControlClient {
             }
             try ensureActiveIdentity(serverId: server.id, profileId: profileId)
             handshake.endHandoff()
+            remember(ready)
             return ready
         } catch {
             // Best effort: a deny that fails (or is refused because the owner
@@ -434,9 +494,12 @@ final class SiloControlClient {
         session?.enqueue(.control(command))
     }
 
+    /// Sends the explicit command for what the remote shows, never the
+    /// toggle: two people pressing at once must not cancel each other out.
     func togglePlayPauseOptimistic() {
-        clock.setOptimisticPlaying(!clock.isPlaying())
-        send(.playPause)
+        let wasPlaying = clock.isPlaying()
+        clock.setOptimisticPlaying(!wasPlaying)
+        send(wasPlaying ? .pause : .play)
     }
 
     func seekOptimistic(to seconds: Double) {
@@ -678,19 +741,35 @@ final class SiloControlClient {
             }
             errorMessage = error.message
             isConnecting = false
-        case .close:
-            // The TV ended the session deliberately (user pressed Disconnect,
-            // or another controller took over). Respect that intent: also
-            // forget the persisted target so no later foreground probe or
-            // reconnect silently reattaches.
-            Self.logger.info("control: received close from TV; clearing session")
-            forgetPersistedTarget()
-            clearSession()
+        case .close(let reason):
+            // The TV ended the session deliberately. An older TV only does
+            // that for a takeover or Disconnect, so the phone forgets it and
+            // never silently reattaches; a TV that keeps several controllers
+            // says why (see `SiloControlClosePolicy`).
+            Self.logger.info("control: received close from TV reason=\(reason ?? "none", privacy: .public)")
+            switch SiloControlClosePolicy.response(
+                reason: reason,
+                tvKeepsOtherControllers: handshake.tvSupports(SiloControlFeature.multiController)
+            ) {
+            case .reconnect:
+                beginReconnect(reason: "Lost connection to the TV.")
+            case .letGo(let forgetTarget):
+                if forgetTarget { forgetPersistedTarget() }
+                // A TV that keeps the target (full, refused, unused profile)
+                // usually sent an error first: keep an open cover up to show
+                // it, as a reconnect that gives up does.
+                let keepCoverVisible = !forgetTarget && isShowingRemoteControl
+                clearSession()
+                isShowingRemoteControl = keepCoverVisible
+            }
         case .ping:
             session?.enqueue(.pong)
         case .pong:
             missedHeartbeats = 0
-        case .launch, .control, .unsupportedControl, .handoffOffer:
+        case .unsupported(let type):
+            // A newer TV sent a message type this build predates.
+            Self.logger.info("control: ignoring unsupported message type \(type, privacy: .public)")
+        case .launch, .control, .unsupportedControl, .handoffOffer, .presence:
             break
         }
     }
@@ -857,6 +936,7 @@ final class SiloControlClient {
         lastTarget = nil
         activeTarget = nil
         state = nil
+        pendingReplace = nil
         isConnecting = false
         isShowingRemoteControl = false
     }
@@ -919,7 +999,10 @@ final class SiloControlClient {
             serverId: server?.id,
             serverName: server?.displayName,
             supportedVersions: SiloControlProtocol.supportedVersions,
-            serverIdentity: server?.verifiedServerId
+            serverIdentity: server?.verifiedServerId,
+            features: SiloControlFeature.phoneFeatures,
+            // A silent auto-resume never puts up the TV's standby screen.
+            passive: sessionIsAutoResumed ? true : nil
         ))
     }
 
