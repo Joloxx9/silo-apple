@@ -112,6 +112,10 @@ struct RequestsFeatureStatus: Decodable {
     /// season has somewhere to go. Absent on servers without missing
     /// seasons, which reads as none.
     var seriesServerConnected: Bool? = nil
+    /// A series already in the library can be requested for the seasons it
+    /// lacks: every download server the series go to fetches single
+    /// seasons. Absent on older servers, which reads as not requestable.
+    var missingSeasonsRequestable: Bool? = nil
 
     /// The feature is on and this profile may use it. A blocked account sees
     /// `requests_enabled: true` with `allowed: false`.

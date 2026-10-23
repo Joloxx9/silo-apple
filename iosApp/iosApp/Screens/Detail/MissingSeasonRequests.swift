@@ -31,7 +31,10 @@ final class MissingSeasonRequests {
         }
         let status = try? await api.requestsStatus()
         guard currentGeneration == generation else { return }
-        guard status?.isAvailable == true, status?.seriesServerConnected == true else {
+        // A download server that cannot fetch single seasons would add the
+        // whole series again, so the server says whether to offer them.
+        guard status?.isAvailable == true, status?.seriesServerConnected == true,
+              status?.missingSeasonsRequestable == true else {
             reset()
             return
         }
