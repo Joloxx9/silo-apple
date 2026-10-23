@@ -263,6 +263,8 @@ final class AppRouter {
         let id = UUID()
         let contentId: String
         let fileId: Int?
+        /// The viewer picked `fileId` in a version picker.
+        var pinsVersion = false
         let audioTrackIndex: Int?
         let subtitleTrackIndex: Int?
         let startFromBeginning: Bool
@@ -449,6 +451,7 @@ final class AppRouter {
         contentId: String,
         libraryId: Int? = nil,
         fileId: Int? = nil,
+        pinsVersion: Bool = false,
         audioTrackIndex: Int? = nil,
         subtitleTrackIndex: Int? = nil,
         startFromBeginning: Bool = false,
@@ -471,6 +474,7 @@ final class AppRouter {
             navigate(to: .playerWithFile(
                 contentId: contentId,
                 fileId: fileId,
+                pinsVersion: pinsVersion,
                 audioTrackIndex: audioTrackIndex,
                 subtitleTrackIndex: subtitleTrackIndex,
                 startFromBeginning: startFromBeginning,
@@ -491,6 +495,7 @@ final class AppRouter {
             libraryId: libraryId,
             contentId: contentId,
             fileId: fileId,
+            pinsVersion: pinsVersion,
             audioTrackIndex: audioTrackIndex,
             subtitleTrackIndex: subtitleTrackIndex,
             startFromBeginning: startFromBeginning,
@@ -512,7 +517,8 @@ final class AppRouter {
                 audioTrackIndex: audioTrackIndex,
                 subtitleTrackIndex: subtitleTrackIndex,
                 startFromBeginning: startFromBeginning,
-                resumePosition: resumePosition
+                resumePosition: resumePosition,
+                pinsVersion: pinsVersion
             )
             guard !isRoutingRemotePlayback else { return }
             // The TV is mid-title and this is a different one: ask first.

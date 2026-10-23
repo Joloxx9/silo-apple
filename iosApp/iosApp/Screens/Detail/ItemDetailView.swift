@@ -340,6 +340,7 @@ private struct OfflinePlayChoice: Identifiable {
     let downloadedLabel: String
     let contentId: String
     let fileId: Int?
+    let pinsVersion: Bool
     let audioTrackIndex: Int?
     let subtitleTrackIndex: Int?
     let startFromBeginning: Bool
@@ -353,6 +354,7 @@ private struct OfflinePlayChoice: Identifiable {
 private struct UnreachablePlayRequest: Identifiable {
     let contentId: String
     let fileId: Int?
+    let pinsVersion: Bool
     let audioTrackIndex: Int?
     let subtitleTrackIndex: Int?
     let startFromBeginning: Bool
@@ -586,6 +588,7 @@ private struct ItemDetailPhoneContent: View {
                 presentStreamingPlayer(
                     contentId: choice.contentId,
                     fileId: choice.fileId,
+                    pinsVersion: choice.pinsVersion,
                     audioTrackIndex: choice.audioTrackIndex,
                     subtitleTrackIndex: choice.subtitleTrackIndex,
                     startFromBeginning: choice.startFromBeginning,
@@ -612,6 +615,7 @@ private struct ItemDetailPhoneContent: View {
                 presentStreamingPlayer(
                     contentId: request.contentId,
                     fileId: request.fileId,
+                    pinsVersion: request.pinsVersion,
                     audioTrackIndex: request.audioTrackIndex,
                     subtitleTrackIndex: request.subtitleTrackIndex,
                     startFromBeginning: request.startFromBeginning,
@@ -716,6 +720,7 @@ private struct ItemDetailPhoneContent: View {
             // The TV resumes from the request's explicit position, so read
             // the server's current one rather than the page's snapshot.
             let fileId = playbackFileId(for: detail)
+            let pinsVersion = preferredVersionFileId != nil
             let audioTrackIndex = preferredAudioTrackIndex
             let subtitleTrackIndex = preferredSubtitleTrackIndex
             controlResumeLookupTask?.cancel()
@@ -729,7 +734,8 @@ private struct ItemDetailPhoneContent: View {
                     audioTrackIndex: audioTrackIndex,
                     subtitleTrackIndex: subtitleTrackIndex,
                     startFromBeginning: false,
-                    resumePosition: state.resumePosition(cached: detail.userData)
+                    resumePosition: state.resumePosition(cached: detail.userData),
+                    pinsVersion: pinsVersion
                 ))
             }
         } else if siloControl.remotePlaybackEngaged {
@@ -810,6 +816,8 @@ private struct ItemDetailPhoneContent: View {
                         contentId: id,
                         fileId: usesSelectedEpisodeControls
                             ? nextUpPlaybackFileId(resolvedFileId: fileId) : nil,
+                        // `fileId` is set only by a version picked for this episode.
+                        pinsVersion: usesSelectedEpisodeControls && fileId != nil,
                         audioTrackIndex: usesSelectedEpisodeControls
                             ? preferredNextUpAudioTrackIndex : nil,
                         subtitleTrackIndex: usesSelectedEpisodeControls
@@ -913,6 +921,7 @@ private struct ItemDetailPhoneContent: View {
                     presentPlayerFromDetail(
                         contentId: contentId,
                         fileId: fileId,
+                        pinsVersion: preferredVersionFileId != nil,
                         audioTrackIndex: fileId == nil ? nil : preferredAudioTrackIndex,
                         subtitleTrackIndex: fileId == nil ? nil : preferredSubtitleTrackIndex,
                         startFromBeginning: startFromBeginning,
@@ -1315,6 +1324,7 @@ private struct ItemDetailPhoneContent: View {
     private func presentPlayerFromDetail(
         contentId: String,
         fileId: Int? = nil,
+        pinsVersion: Bool = false,
         audioTrackIndex: Int? = nil,
         subtitleTrackIndex: Int? = nil,
         startFromBeginning: Bool,
@@ -1329,6 +1339,7 @@ private struct ItemDetailPhoneContent: View {
             presentStreamingPlayer(
                 contentId: contentId,
                 fileId: fileId,
+                pinsVersion: pinsVersion,
                 audioTrackIndex: audioTrackIndex,
                 subtitleTrackIndex: subtitleTrackIndex,
                 startFromBeginning: startFromBeginning,
@@ -1362,6 +1373,7 @@ private struct ItemDetailPhoneContent: View {
                 downloadedLabel: Self.downloadedOptionLabel(for: record),
                 contentId: contentId,
                 fileId: fileId,
+                pinsVersion: pinsVersion,
                 audioTrackIndex: audioTrackIndex,
                 subtitleTrackIndex: subtitleTrackIndex,
                 startFromBeginning: startFromBeginning,
@@ -1376,6 +1388,7 @@ private struct ItemDetailPhoneContent: View {
             unreachablePlayRequest = UnreachablePlayRequest(
                 contentId: contentId,
                 fileId: fileId,
+                pinsVersion: pinsVersion,
                 audioTrackIndex: audioTrackIndex,
                 subtitleTrackIndex: subtitleTrackIndex,
                 startFromBeginning: startFromBeginning,
@@ -1387,6 +1400,7 @@ private struct ItemDetailPhoneContent: View {
         presentStreamingPlayer(
             contentId: contentId,
             fileId: fileId,
+            pinsVersion: pinsVersion,
             audioTrackIndex: audioTrackIndex,
             subtitleTrackIndex: subtitleTrackIndex,
             startFromBeginning: startFromBeginning,
@@ -1397,6 +1411,7 @@ private struct ItemDetailPhoneContent: View {
     private func presentStreamingPlayer(
         contentId: String,
         fileId: Int?,
+        pinsVersion: Bool,
         audioTrackIndex: Int?,
         subtitleTrackIndex: Int?,
         startFromBeginning: Bool,
@@ -1413,6 +1428,7 @@ private struct ItemDetailPhoneContent: View {
             contentId: contentId,
             libraryId: libraryId,
             fileId: fileId,
+            pinsVersion: pinsVersion,
             audioTrackIndex: audioTrackIndex,
             subtitleTrackIndex: subtitleTrackIndex,
             startFromBeginning: startFromBeginning,

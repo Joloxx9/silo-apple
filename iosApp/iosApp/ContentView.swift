@@ -380,6 +380,13 @@ struct ContentView: View {
                 await refreshSessionStores()
             }
         }
+        // A signed-in profile reads the server's speed reading at once, so a
+        // start in the first seconds sends it; the speed test waits a few
+        // seconds for the first screen to settle. The server task below also
+        // hands over each server it commits.
+        .task(id: router.authState == .authenticated) {
+            await handOffSignedInSession()
+        }
         // Work that can prompt the user, or that competes with the first
         // screen for bandwidth, waits until the splash has lifted.
         .task(id: isAuthenticatedAppVisible) {
@@ -431,6 +438,10 @@ struct ContentView: View {
             )
             overlayPrefs.clear()
             guard !Task.isCancelled else { return }
+            // A restored session can reach `.authenticated` before this
+            // commit, and a server switch can stay `.authenticated` across
+            // it, so the speed scheduler follows the committed server here.
+            await handOffSignedInSession()
             Task { await AuthService.shared.refreshActiveServerName() }
             if router.authState == .authenticated {
                 // Nothing below reads title art, and surfaces show its cached
@@ -477,6 +488,12 @@ struct ContentView: View {
 
     var body: some View {
         sessionTaskContent
+        // The speed scheduler starts out in the background and follows the
+        // scene from its first phase, so a launch into the background reads
+        // and tests nothing.
+        .onChange(of: scenePhase, initial: true) { _, phase in
+            if phase == .active { BandwidthProbeScheduler.shared.setForeground(true) }
+        }
         .onChange(of: scenePhase) { _, newPhase in
             #if os(iOS) || os(tvOS)
             // Single funnel for every scene edge. `LaunchTimeline` decides the
@@ -485,8 +502,12 @@ struct ContentView: View {
             LaunchTimeline.recordScenePhase(Self.diagnosticsScenePhase(newPhase))
             #endif
             switch newPhase {
-            case .active: LocalRouteController.shared.sceneDidBecomeActive()
-            case .background: LocalRouteController.shared.sceneDidEnterBackground()
+            case .active:
+                LocalRouteController.shared.sceneDidBecomeActive()
+                BandwidthProbeScheduler.shared.setForeground(true)
+            case .background:
+                LocalRouteController.shared.sceneDidEnterBackground()
+                BandwidthProbeScheduler.shared.setForeground(false)
             default: break
             }
             #if os(iOS)
@@ -608,6 +629,37 @@ struct ContentView: View {
         #else
         await overlayPrefs.hydrateIfNeeded()
         #endif
+    }
+
+    /// Hands the signed-in session to the speed scheduler, and sends the plan
+    /// summaries an earlier run kept for it.
+    private func handOffSignedInSession() async {
+        let scheduler = BandwidthProbeScheduler.shared
+        // Video players register themselves when their playback starts.
+        // An audiobook loading holds tests off as well as one playing.
+        scheduler.isMediaActive = { [audioStore] in
+            audioStore.player.isPlaying || audioStore.player.isLoading || audioStore.player.engineState == .loading
+        }
+        guard router.authState == .authenticated else {
+            scheduler.setActiveServer(nil)
+            return
+        }
+        // Captures only a committed identity, never one mid-transition.
+        guard await HTTPClient.shared.waitForRequestDispatchOpen(), !Task.isCancelled else { return }
+        let auth = await TokenStore.shared.captureOrdinaryRequestAuth()
+        // The session may have ended while this hand-off waited: a sign-out
+        // handed over meanwhile must not be undone by a stale sign-in.
+        guard !Task.isCancelled, router.authState == .authenticated else { return }
+        scheduler.setActiveSession(auth.map {
+            BandwidthProbeSession(
+                serverId: $0.account.serverId,
+                credentialGeneration: $0.account.credentialGenerationID,
+                profileId: $0.profileId
+            )
+        })
+        // Plan summaries an earlier run kept for this server and profile,
+        // because the app ended before their plans did.
+        if let auth { await PlanSummaryJournal.shared.replay(as: auth) }
     }
 
     /// Background audio and PiP are still active use of the selected profile,
@@ -1312,6 +1364,9 @@ struct ContentView: View {
             StartupContentPrefetcher.prefetchAuthenticatedContent()
             await PlayerSettings.shared.refreshFromServer()
             router.resetToHome()
+            // A re-login while already authenticated flips no auth state, so
+            // nothing else hands the new session over.
+            await handOffSignedInSession()
             print("[DebugAutoLogin] signed in and selected profile")
         } catch {
             print("[DebugAutoLogin] failed: \(error)")
@@ -3219,6 +3274,7 @@ struct MainTabView: View {
         case .playerWithFile(
             let contentId,
             let fileId,
+            let pinsVersion,
             let audioTrackIndex,
             let subtitleTrackIndex,
             let startFromBeginning,
@@ -3230,6 +3286,7 @@ struct MainTabView: View {
                 contentId: contentId,
                 libraryId: libraryId,
                 preferredFileId: fileId,
+                pinsVersion: pinsVersion,
                 preferredAudioTrackIndex: audioTrackIndex,
                 preferredSubtitleTrackIndex: subtitleTrackIndex,
                 startFromBeginning: startFromBeginning,

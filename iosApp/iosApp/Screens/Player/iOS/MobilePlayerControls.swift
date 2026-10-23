@@ -21,6 +21,8 @@ struct MobilePlayerControls: View {
     let onDismiss: () -> Void
 
     @State private var activeSheet: PlayerSheet?
+    @State private var tracksDetent: PresentationDetent = .medium
+    @State private var tracksNestedSheetCovers = false
     /// Trailing time label mode: remaining ("−12:34") when true, total
     /// duration otherwise. Tap the label to flip — the native player idiom.
     @State private var showsRemainingTime = true
@@ -108,8 +110,10 @@ struct MobilePlayerControls: View {
         .sheet(item: $activeSheet) { sheet in
             switch sheet {
             case .tracks:
-                TrackSelectionSheet(viewModel: viewModel) { activeSheet = nil }
-                    .presentationDetents([.medium, .large])
+                TrackSelectionSheet(viewModel: viewModel, nestedSheetCoversPlayer: $tracksNestedSheetCovers) {
+                    activeSheet = nil
+                }
+                    .presentationDetents([.medium, .large], selection: $tracksDetent)
                     .presentationDragIndicator(.visible)
             case .settings:
                 PlayerSettingsSheet(
@@ -135,7 +139,14 @@ struct MobilePlayerControls: View {
                 viewModel.pinControlsVisible()
             } else {
                 viewModel.resumeAutoHide()
+                tracksDetent = .medium
+                tracksNestedSheetCovers = false
             }
+        }
+        // Initial too: controls that mount again say whether their sheet
+        // came back with them.
+        .onChange(of: sheetCoversPlayer, initial: true) { _, covers in
+            viewModel.playerSheetCoversPlayer(covers)
         }
     }
 
@@ -606,7 +617,7 @@ struct MobilePlayerControls: View {
                     .padding(.horizontal, 16)
                     .frame(height: SiloTheme.topBarIconHitSize)
                 }
-                .buttonStyle(MobileIntroSkipPillButtonStyle(pill: pill))
+                .buttonStyle(MobilePlayerPillButtonStyle(pill: pill))
                 .accessibilityLabel(pill.kind.accessibilityLabel)
             }
             .frame(maxWidth: .infinity, alignment: .trailing)
@@ -659,6 +670,18 @@ struct MobilePlayerControls: View {
     }
 
     // MARK: - Sheet identifier
+
+    /// A full-height sheet covers the top of the player, where the buffering
+    /// pill and notices show; the tracks sheet at half height does not. In
+    /// a compact height every sheet is full height, and a sheet the tracks
+    /// sheet opens can cover the player on its own.
+    private var sheetCoversPlayer: Bool {
+        switch activeSheet {
+        case .settings: true
+        case .tracks: tracksDetent == .large || verticalSizeClass == .compact || tracksNestedSheetCovers
+        case nil: false
+        }
+    }
 
     private enum PlayerSheet: Identifiable {
         case tracks, settings
@@ -924,10 +947,12 @@ private struct MobileChapterMenuItems: View {
     }
 }
 
-/// The intro pill's capsule: a dark scrim with the timer's fill creeping
-/// behind the label, brighter while pressed.
-private struct MobileIntroSkipPillButtonStyle: ButtonStyle {
-    let pill: IntroSkipPrompt.Pill
+/// The player pills' capsule, shared by the intro-skip and buffering-quality
+/// pills: a dark scrim with the timer's fill creeping behind the label,
+/// brighter while pressed. A button without a timer, such as **Keep quality**,
+/// gets the same capsule with no fill.
+struct MobilePlayerPillButtonStyle: ButtonStyle {
+    let pill: (any PlayerTimedPill)?
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
@@ -935,10 +960,14 @@ private struct MobileIntroSkipPillButtonStyle: ButtonStyle {
             .background {
                 ZStack {
                     Capsule().fill(Color.black.opacity(0.65))
-                    IntroSkipPillProgress(
-                        pill: pill,
-                        color: .white.opacity(configuration.isPressed ? 0.4 : 0.22)
-                    )
+                    if let pill {
+                        PlayerPillProgress(
+                            pill: pill,
+                            color: .white.opacity(configuration.isPressed ? 0.4 : 0.22)
+                        )
+                    } else if configuration.isPressed {
+                        Capsule().fill(Color.white.opacity(0.22))
+                    }
                 }
                 .clipShape(Capsule())
             }

@@ -13,6 +13,20 @@ struct PreparedPlaybackV3: Equatable {
     let plan: PlaybackV3Plan
 }
 
+extension PreparedPlaybackV3 {
+    /// The server learns and applies bandwidth limits for this attempt, and
+    /// its replans may carry `bandwidth_estimate_source` and `learned_limit`.
+    /// ``PlaybackSessionBridge/replanProtocolV3`` reads the same answer.
+    var advertisesBufferingQuality: Bool {
+        serverFeatures.contains(PlaybackProtocolV3.bufferingQualityFeature)
+    }
+
+    /// The server accepts this attempt's `plan_summary` route events.
+    var advertisesPlanSummary: Bool {
+        serverFeatures.contains(PlaybackProtocolV3.planSummaryFeature)
+    }
+}
+
 enum ApplePlaybackV3PlanError: LocalizedError, Equatable {
     case unsupportedDelivery(String)
     case invalidTransport(String)
@@ -264,18 +278,22 @@ enum ApplePlaybackV3PlanAdapter {
     /// local selection API cannot switch it, so audio is server-owned.
     static func serverOwnsAudioTracks(_ plan: PlaybackV3Plan?) -> Bool {
         guard let plan else { return false }
+        // Every server remux or transcode maps only the plan's audio stream,
+        // so the one track the engine sees there is ordinal 0 of its output,
+        // not of the file.
         return [
+            PlaybackProtocolV3.PlanDelivery.remuxProgressive,
             PlaybackProtocolV3.PlanDelivery.remuxHLS,
             PlaybackProtocolV3.PlanDelivery.transcodeHLS,
         ].contains(plan.delivery)
     }
 
     /// Keeps Aether authoritative when it publishes the file's audio tracks,
-    /// but fills the picker from the selected catalog version on server HLS,
-    /// or when a remote V3 route publishes no audio at all. Audio changes on
-    /// those routes are server-owned replans, so each fallback row carries the
-    /// catalog ordinal in `srcId` and the plan's selected ordinal drives the
-    /// checkmark.
+    /// on direct play, but fills the picker from the selected catalog version
+    /// on a server remux or transcode, or when a remote V3 route publishes no
+    /// audio at all. Audio changes on those routes are server-owned replans,
+    /// so each fallback row carries the catalog ordinal in `srcId` and the
+    /// plan's selected ordinal drives the checkmark.
     static func audioPickerTracks(
         aetherTracks: [PlayerTrack],
         plan: PlaybackV3Plan?,

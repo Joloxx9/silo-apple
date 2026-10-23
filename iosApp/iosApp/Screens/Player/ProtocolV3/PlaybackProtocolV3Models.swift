@@ -43,7 +43,45 @@ enum PlaybackProtocolV3 {
     /// Scoped to `original_http`: after probing the complete source, Aether
     /// maps the plan's selected audio ordinal to its concrete stream id.
     static let embeddedSubtitlesFeature = "embedded_subtitles_v1"
+    /// Native v2 only. A `server_transcode_hls` plan carries its embedded text
+    /// track as a WebVTT subtitle rendition of the transcode's own HLS master
+    /// (`subtitle.hls_rendition`) instead of a whole-file sidecar extract.
+    static let hlsSubtitleRenditionsFeature = "hls_subtitle_renditions_v1"
     static let clientSelectedAudioTrackClaim = "client_selected_audio_track_v1"
+    /// Native v2 only. The server accepts `bandwidth_estimate_source` and
+    /// `learned_limit` on a start or replan whose `client_features` names it,
+    /// and records and applies learned bandwidth limits only for such requests.
+    /// See ``PlaybackV3BufferingQualityRequest``.
+    static let bufferingQualityFeature = "buffering_quality_v1"
+    /// Native v2 only. The server accepts the `plan_summary` route event.
+    static let planSummaryFeature = "playback_plan_summary_v1"
+    /// Capability only. The server advertises `bandwidth_probe_url`, takes
+    /// probe results, and adds `probe` and `auto_budget_kbps` to the
+    /// connection endpoint. See ``BandwidthProbeScheduler``.
+    static let connectionSpeedFeature = "connection_speed_v1"
+
+    /// Where a request's `bandwidth_estimate_kbps` came from.
+    enum BandwidthEstimateSource {
+        static let probe = "probe"
+        /// The step-down estimate after repeated rebuffering. The server keeps
+        /// it as this device's learned limit on the current connection.
+        static let observedRebuffer = "observed_rebuffer"
+    }
+
+    /// What a request asks the server to do with the learned limit. Absent,
+    /// the limit applies to Auto.
+    enum LearnedLimit {
+        /// Plan without the limit and keep it stored.
+        static let ignore = "ignore"
+        /// Delete the limit for this connection, then plan without it.
+        static let clear = "clear"
+    }
+
+    enum RouteEvent {
+        /// Sent when a plan stops being the playing plan; see
+        /// ``BufferingQualityController/PlanSummary/routeEventDiagnostics``.
+        static let planSummary = "plan_summary"
+    }
 
     /// Delivery classes are the unit a client negotiates in
     /// `client_playback_context.deliveries`. They are deliberately coarser than
@@ -288,6 +326,11 @@ struct PlaybackV3StartRequest: Codable, Equatable {
     let clientPlaybackContext: PlaybackV3ClientContext
     /// Room playback keeps one source timeline across all participant plans.
     var allowAlternateVersions: Bool? = nil
+    /// `buffering_quality_v1` members, taken from a
+    /// ``PlaybackV3BufferingQualityRequest``. The wire body sends them only
+    /// alongside the feature.
+    var bandwidthEstimateSource: String? = nil
+    var learnedLimit: String? = nil
 }
 
 struct PlaybackV3TrackIdentity: Codable, Equatable {
@@ -333,6 +376,101 @@ struct PlaybackV3ReplanRequest: Codable, Equatable {
     let localMutations: [String]
     let clientCapabilities: PlaybackV3CodecCapabilities
     let clientPlaybackContext: PlaybackV3ClientContext
+    /// `buffering_quality_v1` members, as on ``PlaybackV3StartRequest``.
+    var bandwidthEstimateSource: String? = nil
+    var learnedLimit: String? = nil
+    /// The playing plan's throughput so far, sent only with
+    /// `observed_rebuffer` (``PlaybackV3BufferingQualityRequest``).
+    var observedThroughputKbps: Int? = nil
+}
+
+/// The client features and buffering-quality members of one start or replan.
+///
+/// The server refuses `bandwidth_estimate_source`, `learned_limit` and
+/// `observed_throughput_kbps` unless `client_features` names
+/// `buffering_quality_v1`, refuses a source without
+/// `bandwidth_estimate_kbps`, and a throughput without the
+/// `observed_rebuffer` source. Requests take these values from here, and the
+/// v2 wire bodies apply ``permittedMembers`` again when they encode, so no
+/// refused shape can be sent.
+struct PlaybackV3BufferingQualityRequest: Equatable, Sendable {
+    let clientFeatures: [String]
+    let bandwidthEstimateKbps: Int?
+    let bandwidthEstimateSource: String?
+    let learnedLimit: String?
+    /// What the playing plan received so far, measured as its
+    /// `plan_summary` `throughput_kbps`. The server plans a lowering with the
+    /// lower of this and the estimate.
+    let observedThroughputKbps: Int?
+
+    /// - Parameters:
+    ///   - serverAdvertisesFeature: whether the server advertises
+    ///     `buffering_quality_v1`. Without it the estimate is still sent, and
+    ///     the two members are dropped.
+    ///   - mode: the effective `playback.buffering_quality_mode`. In `never`
+    ///     a request carries `learned_limit: "ignore"`, so a limit another
+    ///     profile on this device learned does not lower its plans.
+    ///   - learnedLimit: an explicit choice, which wins over the mode (Restore
+    ///     quality sends `clear`).
+    init(
+        baseFeatures: [String],
+        serverAdvertisesFeature: Bool,
+        mode: BufferingQualityMode,
+        bandwidthEstimateKbps: Int? = nil,
+        bandwidthEstimateSource: String? = nil,
+        learnedLimit: String? = nil,
+        observedThroughputKbps: Int? = nil
+    ) {
+        let features = serverAdvertisesFeature && !baseFeatures.contains(PlaybackProtocolV3.bufferingQualityFeature)
+            ? baseFeatures + [PlaybackProtocolV3.bufferingQualityFeature]
+            : baseFeatures
+        let permitted = Self.permittedMembers(
+            clientFeatures: features,
+            bandwidthEstimateKbps: bandwidthEstimateKbps,
+            bandwidthEstimateSource: bandwidthEstimateSource,
+            learnedLimit: learnedLimit ?? (mode == .never ? PlaybackProtocolV3.LearnedLimit.ignore : nil),
+            observedThroughputKbps: observedThroughputKbps
+        )
+        clientFeatures = features
+        self.bandwidthEstimateKbps = bandwidthEstimateKbps
+        self.bandwidthEstimateSource = permitted.bandwidthEstimateSource
+        self.learnedLimit = permitted.learnedLimit
+        self.observedThroughputKbps = permitted.observedThroughputKbps
+    }
+
+    /// The members a request may carry: none without the feature in
+    /// `clientFeatures`, no source without an estimate, and no throughput
+    /// without the `observed_rebuffer` source.
+    static func permittedMembers(
+        clientFeatures: [String],
+        bandwidthEstimateKbps: Int?,
+        bandwidthEstimateSource: String?,
+        learnedLimit: String?,
+        observedThroughputKbps: Int? = nil
+    ) -> (bandwidthEstimateSource: String?, learnedLimit: String?, observedThroughputKbps: Int?) {
+        guard clientFeatures.contains(PlaybackProtocolV3.bufferingQualityFeature) else { return (nil, nil, nil) }
+        let source = bandwidthEstimateKbps == nil ? nil : bandwidthEstimateSource
+        let observed = source == PlaybackProtocolV3.BandwidthEstimateSource.observedRebuffer
+            ? observedThroughputKbps
+            : nil
+        return (source, learnedLimit, observed)
+    }
+}
+
+extension PlaybackV3ReplanRequest {
+    /// This request with only the buffering-quality members the server accepts.
+    var withPermittedBufferingQualityMembers: PlaybackV3ReplanRequest {
+        var request = self
+        (request.bandwidthEstimateSource, request.learnedLimit, request.observedThroughputKbps) =
+            PlaybackV3BufferingQualityRequest.permittedMembers(
+                clientFeatures: clientFeatures,
+                bandwidthEstimateKbps: bandwidthEstimateKbps,
+                bandwidthEstimateSource: bandwidthEstimateSource,
+                learnedLimit: learnedLimit,
+                observedThroughputKbps: observedThroughputKbps
+            )
+        return request
+    }
 }
 
 struct PlaybackV3RouteEvent: Codable, Equatable {
@@ -349,6 +487,28 @@ struct PlaybackV3RouteEvent: Codable, Equatable {
     let quirkRegistryRevision: String?
     let outputContextId: String?
     let diagnostics: [String: String]
+}
+
+/// What one plan did while it was the playing plan, as the `plan_summary`
+/// route event carries it: sent when the plan is replaced, stopped or fails,
+/// and only to a server that advertises `playback_plan_summary_v1`.
+extension BufferingQualityController.PlanSummary {
+    /// The event's diagnostics. Every value is a string, and an unknown
+    /// estimate or bitrate is left out rather than sent as zero.
+    var routeEventDiagnostics: [String: String] {
+        var values = [
+            "played_ms": String(max(0, playedMs)),
+            "stall_count": String(max(0, stallCount)),
+            "stall_total_ms": String(max(0, stallTotalMs)),
+            "stall_longest_ms": String(max(0, stallLongestMs)),
+            "buffering_mode": mode.wireValue,
+            "buffering_action": action.rawValue,
+        ]
+        values["delivered_kbps"] = deliveredKbps.map(String.init)
+        values["bandwidth_estimate_kbps"] = bandwidthEstimateKbps.map(String.init)
+        values["throughput_kbps"] = throughputKbps.map(String.init)
+        return values
+    }
 }
 
 struct PlaybackV3Stream: Codable, Equatable {
@@ -482,11 +642,23 @@ struct PlaybackV3EmbeddedSubtitle: Codable, Equatable {
     let streamIndex: Int
 }
 
+/// The selected track as the plan stream's own `SUBTITLES` rendition. The
+/// stream URL is then a multivariant master that offers only this track.
+struct PlaybackV3HLSSubtitleRendition: Codable, Equatable {
+    let groupId: String
+    let name: String
+    let format: String
+    let mimeType: String
+}
+
 struct PlaybackV3SubtitleDecision: Codable, Equatable {
     let mode: String
     let trackId: String?
     let artifact: PlaybackV3SubtitleArtifact?
     var embedded: PlaybackV3EmbeddedSubtitle? = nil
+    /// Exclusive with `artifact` and `embedded`. The inventory row keeps its
+    /// sidecar URL.
+    var hlsRendition: PlaybackV3HLSSubtitleRendition? = nil
     /// Authoritative list of every subtitle track for this plan. Select a track
     /// by echoing an entry's `trackId` or `combinedIndex` — never by counting
     /// tracks, summing arrays, or taking max(index) + 1.
@@ -541,9 +713,21 @@ struct PlaybackV3Plan: Codable, Equatable {
     let subtitleFidelityPolicy: String
     /// Quality rungs the server will honour for a `quality_change` replan.
     let availableQualities: [PlaybackV3AvailableQuality]
+    /// Present only when this device's learned limit lowered the plan.
+    var bandwidthLimit: PlaybackV3BandwidthLimit? = nil
     /// The `availableQualities` label this plan delivers, when the server
     /// advertises `plan_active_quality_v1`; nil when it delivers none.
     var activeQuality: String? = nil
+}
+
+/// `playback_plan.bandwidth_limit`: the learned limit Auto planned under,
+/// after repeated rebuffering on this device and connection.
+struct PlaybackV3BandwidthLimit: Codable, Equatable, Sendable {
+    let kbps: Int
+    /// Always `observed_rebuffer` today.
+    let source: String
+    /// RFC 3339.
+    let expiresAt: String
 }
 
 extension PlaybackV3Plan {
@@ -581,6 +765,19 @@ extension PlaybackV3Plan {
     /// executable without publishing the row).
     var selectedSubtitleCombinedIndex: Int? {
         selectedSubtitleInventoryItem?.combinedIndex ?? selectedTracks.subtitle?.index
+    }
+
+    /// The selected row's sidecar, for a player that does not show this
+    /// plan's HLS subtitle rendition. Nil when the plan has no rendition.
+    var hlsSubtitleRenditionSidecar: PlaybackV3SubtitleArtifact? {
+        guard subtitle.hlsRendition != nil, let item = selectedSubtitleInventoryItem,
+              item.delivery == "sidecar",
+              let url = item.url?.trimmingCharacters(in: .whitespacesAndNewlines), !url.isEmpty else {
+            return nil
+        }
+        // Only embedded text tracks get a rendition, and their sidecars are
+        // WebVTT on original-media time.
+        return PlaybackV3SubtitleArtifact(url: url, mimeType: "text/vtt", format: "vtt", timingOriginSeconds: 0)
     }
 }
 

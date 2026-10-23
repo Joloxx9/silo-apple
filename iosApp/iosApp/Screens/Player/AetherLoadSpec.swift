@@ -153,6 +153,14 @@ struct AetherLoadSpec {
     /// The selected native row uses the same picker ID space as sidecars,
     /// but resolves directly to its container stream, without an external slot.
     let embeddedSubtitleAlias: (appTrackID: Int64, streamIndex: Int)?
+    /// The declared subtitle artifact is the server's extract of a track
+    /// inside the media file. That response streams until the server has
+    /// demuxed the whole file, which takes tens of seconds on a large remux.
+    let declaresEmbeddedTrackExtract: Bool
+    /// The picker row the plan carries as its transcode's HLS subtitle
+    /// rendition. AVPlayer draws it from the master; Aether lists it as a
+    /// legible option once the master has loaded.
+    let hlsSubtitleRenditionAppTrackID: Int64?
 
     /// The bridge for codecs Aether cannot stream-copy, when a caller does not
     /// name one. Lossless rather than Aether's `.surroundCompat` default;
@@ -241,6 +249,8 @@ struct AetherLoadSpec {
             return (SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: sidecar.index), URLRequest(url: url))
         })
         embeddedSubtitleAlias = nil
+        declaresEmbeddedTrackExtract = false
+        hlsSubtitleRenditionAppTrackID = nil
         externalSubtitleAppTrackIDs = sidecars.map { sidecar -> Int64? in
             SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: sidecar.index)
         }
@@ -324,6 +334,8 @@ struct AetherLoadSpec {
             return (SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: sidecar.index), request)
         })
         embeddedSubtitleAlias = nil
+        declaresEmbeddedTrackExtract = false
+        hlsSubtitleRenditionAppTrackID = nil
         externalSubtitleAppTrackIDs = sidecars.map { sidecar -> Int64? in
             SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: sidecar.index)
         }
@@ -369,7 +381,8 @@ struct AetherLoadSpec {
         deinterlaceFieldRate: DeinterlaceFieldRate = Self.defaultDeinterlaceFieldRate,
         dolbyVisionHandling: DolbyVisionHandling = .automatic,
         resumeSourcePosition: Double? = nil,
-        panelIsInHDRMode: Bool? = nil
+        panelIsInHDRMode: Bool? = nil,
+        showsHLSSubtitleRendition: Bool = true
     ) throws {
         try ApplePlaybackV3PlanAdapter.validate(plan)
         let resolvedPlanSourceURL: URL?
@@ -405,8 +418,14 @@ struct AetherLoadSpec {
         // every later Aether external id by one.
         var externalSubtitles: [ExternalSubtitleTrack] = []
         var externalSubtitleAppTrackIDs: [Int64?] = []
+        var declaresEmbeddedTrackExtract = false
+        // AVPlayer draws a rendition itself, without the overlay's subtitle
+        // delay. A caller that has to honour one mounts the row's sidecar.
+        let usesHLSSubtitleRendition = plan.subtitle.hlsRendition != nil && showsHLSSubtitleRendition
+            && PlaybackProtocolV3.SubtitleMode.locallyRendered.contains(plan.subtitle.mode)
         if plan.subtitle.embedded == nil,
-           let artifact = plan.subtitle.artifact,
+           let artifact = plan.subtitle.artifact
+            ?? (usesHLSSubtitleRendition ? nil : plan.hlsSubtitleRenditionSidecar),
            PlaybackProtocolV3.SubtitleMode.locallyRendered.contains(plan.subtitle.mode) {
             guard artifact.timingOriginSeconds.isFinite, abs(artifact.timingOriginSeconds) < 0.001 else {
                 throw ValidationError.unsupportedSubtitleTimingOrigin(
@@ -454,6 +473,7 @@ struct AetherLoadSpec {
             externalSubtitleAppTrackIDs.append(inventoryItem.map { item in
                 SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: item.combinedIndex)
             })
+            declaresEmbeddedTrackExtract = inventoryItem?.source == "embedded"
         }
 
         self.planID = plan.planId
@@ -482,6 +502,10 @@ struct AetherLoadSpec {
         }
         self.audioSourceStreamIndex = audioSourceStreamIndex
         self.externalSubtitleAppTrackIDs = externalSubtitleAppTrackIDs
+        self.declaresEmbeddedTrackExtract = declaresEmbeddedTrackExtract
+        hlsSubtitleRenditionAppTrackID = usesHLSSubtitleRendition
+            ? plan.selectedSubtitleInventoryItem.map { SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: $0.combinedIndex) }
+            : nil
         if let item = plan.selectedSubtitleInventoryItem, let value = item.fontBundleUrl {
             let url = resolveURL.map { $0(value) } ?? URL(string: value)
             guard let url, ["http", "https", "file"].contains(url.scheme?.lowercased() ?? "") else {
