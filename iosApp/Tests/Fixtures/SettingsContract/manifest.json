@@ -748,7 +748,7 @@
       "resolution_order": ["profile", "default"],
       "value_schema": { "type": "boolean" },
       "default_value": false,
-      "platforms": ["web", "ios", "tvos", "macos"],
+      "platforms": ["web", "ios", "tvos", "macos", "android", "android_tv"],
       "category": "catalog",
       "label": "Show missing episodes",
       "description": "Show seasons and episodes the library lacks, with a way to request them.",
