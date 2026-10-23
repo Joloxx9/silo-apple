@@ -37,10 +37,6 @@ enum ApplePlaybackV3Capabilities {
     /// validated passthrough claim only to a client that enumerates real sink
     /// channel layouts at `exact` audio evidence, and Apple attests neither.
     /// Advertising it would be a claim we cannot back.
-    ///
-    /// `hls_subtitle_renditions_v1` only shapes `server_transcode_hls` plans,
-    /// which Aether always plays as native remote HLS, where AVPlayer draws the
-    /// master's own subtitle rendition. Offline downloads build their own list.
     static let features = [
         PlaybackProtocolV3.planFeature,
         PlaybackProtocolV3.clientTransformFeature,

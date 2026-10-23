@@ -157,9 +157,9 @@ struct AetherLoadSpec {
     /// inside the media file. That response streams until the server has
     /// demuxed the whole file, which takes tens of seconds on a large remux.
     let declaresEmbeddedTrackExtract: Bool
-    /// The picker row the plan carries as its transcode's HLS subtitle
-    /// rendition. AVPlayer draws it from the master; Aether lists it as a
-    /// legible option once the master has loaded.
+    /// The selected picker row of an `hls_rendition` plan. The track is a
+    /// legible option of the stream's own playlist, so it has no declared
+    /// external slot and no Aether id until AVPlayer publishes the option.
     let hlsSubtitleRenditionAppTrackID: Int64?
 
     /// The bridge for codecs Aether cannot stream-copy, when a caller does not
@@ -381,8 +381,7 @@ struct AetherLoadSpec {
         deinterlaceFieldRate: DeinterlaceFieldRate = Self.defaultDeinterlaceFieldRate,
         dolbyVisionHandling: DolbyVisionHandling = .automatic,
         resumeSourcePosition: Double? = nil,
-        panelIsInHDRMode: Bool? = nil,
-        showsHLSSubtitleRendition: Bool = true
+        panelIsInHDRMode: Bool? = nil
     ) throws {
         try ApplePlaybackV3PlanAdapter.validate(plan)
         let resolvedPlanSourceURL: URL?
@@ -419,13 +418,8 @@ struct AetherLoadSpec {
         var externalSubtitles: [ExternalSubtitleTrack] = []
         var externalSubtitleAppTrackIDs: [Int64?] = []
         var declaresEmbeddedTrackExtract = false
-        // AVPlayer draws a rendition itself, without the overlay's subtitle
-        // delay. A caller that has to honour one mounts the row's sidecar.
-        let usesHLSSubtitleRendition = plan.subtitle.hlsRendition != nil && showsHLSSubtitleRendition
-            && PlaybackProtocolV3.SubtitleMode.locallyRendered.contains(plan.subtitle.mode)
         if plan.subtitle.embedded == nil,
-           let artifact = plan.subtitle.artifact
-            ?? (usesHLSSubtitleRendition ? nil : plan.hlsSubtitleRenditionSidecar),
+           let artifact = plan.subtitle.artifact,
            PlaybackProtocolV3.SubtitleMode.locallyRendered.contains(plan.subtitle.mode) {
             guard artifact.timingOriginSeconds.isFinite, abs(artifact.timingOriginSeconds) < 0.001 else {
                 throw ValidationError.unsupportedSubtitleTimingOrigin(
@@ -503,9 +497,6 @@ struct AetherLoadSpec {
         self.audioSourceStreamIndex = audioSourceStreamIndex
         self.externalSubtitleAppTrackIDs = externalSubtitleAppTrackIDs
         self.declaresEmbeddedTrackExtract = declaresEmbeddedTrackExtract
-        hlsSubtitleRenditionAppTrackID = usesHLSSubtitleRendition
-            ? plan.selectedSubtitleInventoryItem.map { SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: $0.combinedIndex) }
-            : nil
         if let item = plan.selectedSubtitleInventoryItem, let value = item.fontBundleUrl {
             let url = resolveURL.map { $0(value) } ?? URL(string: value)
             guard let url, ["http", "https", "file"].contains(url.scheme?.lowercased() ?? "") else {
@@ -529,6 +520,13 @@ struct AetherLoadSpec {
             )
         } else {
             embeddedSubtitleAlias = nil
+        }
+        if plan.subtitle.hlsRendition != nil,
+           PlaybackProtocolV3.SubtitleMode.locallyRendered.contains(plan.subtitle.mode),
+           let combinedIndex = plan.selectedSubtitleCombinedIndex {
+            hlsSubtitleRenditionAppTrackID = SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: combinedIndex)
+        } else {
+            hlsSubtitleRenditionAppTrackID = nil
         }
         let isServerHLS = [
             PlaybackProtocolV3.PlanDelivery.remuxHLS,

@@ -54,11 +54,13 @@ enum PlaybackMediaAuthorization {
                   let path = Self.pathComponents(components.percentEncodedPath) else {
                 return false
             }
-            if path == sourcePath {
-                return Self.hasAllowedQuery(components, allowsRendition: hlsPrefix != nil)
-            }
-            guard Self.hasAllowedQuery(components),
-                  let hlsPrefix,
+            // A transcode carrying its subtitle in the stream answers master.m3u8
+            // with a multivariant playlist whose variant and subtitle playlists
+            // are the same route under `silo_rendition`.
+            if hlsPrefix != nil, path == sourcePath, Self.hasRenditionQuery(components) { return true }
+            guard Self.hasAllowedQuery(components) else { return false }
+            if path == sourcePath { return true }
+            guard let hlsPrefix,
                   path.count == hlsPrefix.count + 2,
                   Array(path.prefix(hlsPrefix.count)) == hlsPrefix,
                   path[hlsPrefix.count] == "segment" else {
@@ -106,15 +108,14 @@ enum PlaybackMediaAuthorization {
             }
         }
 
-        /// A transcode master that carries a subtitle rendition names its video
-        /// and subtitle playlists as itself plus one `silo_rendition` field.
-        private static func hasAllowedQuery(_ components: URLComponents, allowsRendition: Bool = false) -> Bool {
-            var items = components.queryItems ?? []
-            if allowsRendition, let index = items.firstIndex(where: { $0.name == "silo_rendition" }),
-               ["video", "subtitles"].contains(items[index].value) {
-                items.remove(at: index)
-            }
-            guard !items.isEmpty else { return true }
+        private static func hasRenditionQuery(_ components: URLComponents) -> Bool {
+            guard let items = components.queryItems, items.count == 1,
+                  items[0].name == "silo_rendition" else { return false }
+            return ["video", "subtitles"].contains(items[0].value)
+        }
+
+        private static func hasAllowedQuery(_ components: URLComponents) -> Bool {
+            guard let items = components.queryItems, !items.isEmpty else { return true }
             guard items.count == 1, items[0].name == "seek",
                   let value = items[0].value, let seconds = Double(value),
                   seconds.isFinite, seconds >= 0 else {
