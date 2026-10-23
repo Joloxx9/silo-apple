@@ -878,6 +878,7 @@ struct APIv2Client: Sendable {
     }
 
     func catalogEpisodes(seriesId: String, seasonNumber: Int, libraryId: String? = nil, artwork: [String: String],
+                         missing: MissingEpisodes = .none,
                          auth: CapturedOrdinaryRequestAuth) async throws -> [APIv2CatalogRead.Episode] {
         try await gate()
         guard seasonNumber >= 0 else { throw APIv2Error.invalidCatalogQuery }
@@ -889,6 +890,7 @@ struct APIv2Client: Sendable {
         let identity = Self.requestIdentity(auth, profile: profile)
         let path = "/api/v2/catalog/series/\(try catalogPathSegment(seriesId))/seasons/\(seasonNumber)/episodes"
         let query = catalogReadScope(libraryId: libraryId, artwork: artwork)
+            .merging(missing.queryItems) { _, new in new }
         let raw = try await tokenStore.withOwnerFence(auth) {
             try await mapErrors {
                 try await http.requestData(method: "GET", path: path, query: query,
@@ -902,6 +904,7 @@ struct APIv2Client: Sendable {
     }
 
     func catalogSeasons(seriesId: String, libraryId: String? = nil, artwork: [String: String], includeArtwork: Bool? = nil,
+                         missing: MissingEpisodes = .none,
                          auth: CapturedOrdinaryRequestAuth) async throws -> [APIv2CatalogRead.Season] {
         try await gate()
         guard let profile = auth.profileId, !profile.isEmpty,
@@ -913,6 +916,7 @@ struct APIv2Client: Sendable {
         let path = "/api/v2/catalog/series/\(try catalogPathSegment(seriesId))/seasons"
         var query = catalogReadScope(libraryId: libraryId, artwork: artwork)
         if let includeArtwork { query["include_artwork"] = String(includeArtwork) }
+        query.merge(missing.queryItems) { _, new in new }
         let requestQuery = query
         let raw = try await tokenStore.withOwnerFence(auth) {
             try await mapErrors {

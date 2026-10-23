@@ -270,7 +270,7 @@ actor SiloAPI {
         return filters
     }
 
-    func seasons(seriesId: String, libraryId: Int? = nil) async throws -> SeasonsResponse {
+    func seasons(seriesId: String, libraryId: Int? = nil, missing: MissingEpisodes = .none) async throws -> SeasonsResponse {
         let auth = try await detailReadAuth()
         #if os(tvOS)
         let includeArtwork: Bool? = false
@@ -279,18 +279,19 @@ actor SiloAPI {
         #endif
         let seasons = try await apiV2Client.catalogSeasons(
             seriesId: seriesId, libraryId: libraryId.map(String.init),
-            artwork: await artworkQuery(.seasons), includeArtwork: includeArtwork, auth: auth
+            artwork: await artworkQuery(.seasons), includeArtwork: includeArtwork, missing: missing, auth: auth
         )
         let response = SeasonsResponse(seasons: try seasons.map { try Season(catalog: $0) })
         try await requireCurrentOwner(auth)
         return response
     }
 
-    func episodes(seriesId: String, seasonNumber: Int, libraryId: Int? = nil) async throws -> EpisodesResponse {
+    func episodes(seriesId: String, seasonNumber: Int, libraryId: Int? = nil,
+                  missing: MissingEpisodes = .none) async throws -> EpisodesResponse {
         let auth = try await detailReadAuth()
         let episodes = try await apiV2Client.catalogEpisodes(
             seriesId: seriesId, seasonNumber: seasonNumber, libraryId: libraryId.map(String.init),
-            artwork: await artworkQuery(.episodes), auth: auth
+            artwork: await artworkQuery(.episodes), missing: missing, auth: auth
         )
         let response = EpisodesResponse(episodes: try episodes.map { try EpisodeListItem(catalog: $0) })
         try await requireCurrentOwner(auth)

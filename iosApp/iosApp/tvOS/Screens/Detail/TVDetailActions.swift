@@ -51,9 +51,13 @@ private struct TVPrimaryPillLabel: View {
 
     var body: some View {
         HStack(spacing: 16) {
-            Image(systemName: icon)
-                .font(.system(size: 31, weight: .bold))
-                .frame(width: 36, height: 36)
+            // An empty icon leaves the title alone, for an action that is
+            // not playback.
+            if !icon.isEmpty {
+                Image(systemName: icon)
+                    .font(.system(size: 31, weight: .bold))
+                    .frame(width: 36, height: 36)
+            }
             if isFocused || stabilizesFocusMotion {
                 VStack(alignment: .leading, spacing: 0) {
                     Text(title)
@@ -454,6 +458,8 @@ struct TVDetailActionRow<PlaybackSelectors: View, MoreMenu: View>: View {
     var isPlaybackLoading = false
     var allowsInitialPlayFocus = true
     var tracksInitialFocusNavigation = false
+    /// The primary pill's symbol; empty for an action that is not playback.
+    var playIcon = "play.fill"
     @ViewBuilder let playbackSelectors: () -> PlaybackSelectors
     @ViewBuilder let moreMenu: () -> MoreMenu
 
@@ -468,7 +474,7 @@ struct TVDetailActionRow<PlaybackSelectors: View, MoreMenu: View>: View {
         HStack(spacing: stabilizesFocusMotion ? 18 : 36) {
             if playTitle != nil || stabilizesFocusMotion {
                 TVPrimaryPillButton(
-                    icon: "play.fill",
+                    icon: playIcon,
                     title: playTitle ?? (isPlaybackLoading ? "Loading episodes…" : "Play"),
                     subtitle: playSubtitle,
                     stabilizesFocusMotion: stabilizesFocusMotion,

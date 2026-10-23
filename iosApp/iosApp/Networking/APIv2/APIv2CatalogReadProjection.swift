@@ -125,6 +125,7 @@ extension Season {
         self.userData = try value.userData.map { try SeasonUserData(catalog: $0) }
         self.posterUrl = value.posterUrl
         self.machineTranslatedFields = value.machineTranslatedFields
+        self.missingEpisodeCount = try value.missingEpisodeCount.map { try catalogLegacyInt($0) } ?? 0
     }
 }
 
@@ -147,6 +148,7 @@ extension EpisodeListItem {
         self.stillUrl = value.stillUrl
         self.machineTranslatedFields = value.machineTranslatedFields
         self.pendingTranslationLanguage = value.pendingTranslationLanguage
+        self.availability = value.availability.flatMap(EpisodeAvailability.init(rawValue:))
     }
 }
 

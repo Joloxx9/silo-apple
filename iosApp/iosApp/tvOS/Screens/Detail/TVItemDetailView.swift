@@ -18,6 +18,7 @@ struct TVItemDetailView: View {
 
     @State private var viewModel: ItemDetailViewModel
     @State private var hasStartedDetailLoad = false
+    @State private var missingSeasonRequests = MissingSeasonRequests()
     /// Set when the user explicitly resets subtitles to "Auto" this visit:
     /// the server override is cleared with a fire-and-forget DELETE, but the
     /// already-fetched detail still carries the old `effectiveSubtitle*`, so
@@ -154,6 +155,7 @@ struct TVItemDetailView: View {
                     ?? viewModel.initialResumeSeasonNumber
             }
             hasStartedDetailLoad = true
+            viewModel.missingEpisodes = await MissingEpisodesPreferenceStore.shared.scope()
             await viewModel.loadDetail(contentId: contentId)
             seedSubtitleOverrideIfNeeded()
         }
@@ -436,8 +438,15 @@ struct TVItemDetailView: View {
                 },
                 synopsisStatus: viewModel.descriptionTranslationStatus,
                 isTranslatingEpisodes: viewModel.isTranslatingSeasonEpisodes,
-                onTranslateDescription: translateDescriptionAction
+                onTranslateDescription: translateDescriptionAction,
+                requestedSeasons: missingSeasonRequests.requestedSeasons,
+                onRequestSeason: missingSeasonRequests.canRequest
+                    ? { await missingSeasonRequests.request(season: $0) }
+                    : nil
             )
+            .task(id: MissingSeasonRequestsKey(tmdbId: detail.tmdbId, missing: viewModel.missingEpisodes)) {
+                await missingSeasonRequests.load(tmdbId: detail.tmdbId, missing: viewModel.missingEpisodes)
+            }
             .task(id: activeSeriesEpisodeContentId) {
                 guard let id = activeSeriesEpisodeContentId else { return }
                 do { try await Task.sleep(for: .milliseconds(120)) } catch { return }
@@ -779,7 +788,8 @@ struct TVItemDetailView: View {
            let active = viewModel.seriesEpisodeWindow.episodes.first(where: {
                $0.contentId == activeSeriesEpisodeContentId
            }) {
-            return active
+            // An episode the library lacks has no playback detail to read.
+            return active.availability == nil ? active : nil
         }
         return viewModel.episodes.preferredResumeEpisode()
     }
@@ -890,6 +900,7 @@ struct TVItemDetailView: View {
         for neighborIndex in neighborIndices {
             guard !Task.isCancelled else { return }
             let neighbor = episodes[neighborIndex]
+            if neighbor.availability != nil { continue }
             let cached: ItemDetail? = ResponseCache.shared.get(
                 CacheKey.itemDetail(neighbor.contentId, libraryId: libraryId)
             )
@@ -944,7 +955,7 @@ struct TVItemDetailView: View {
                 index += direction
                 continue
             }
-            let key = CacheKey.itemEpisodes(seriesId: detail.contentId, seasonNumber: season.seasonNumber, libraryId: libraryId)
+            let key = CacheKey.itemEpisodes(seriesId: detail.contentId, seasonNumber: season.seasonNumber, libraryId: libraryId, missing: viewModel.missingEpisodes)
             do {
                 let response: EpisodesResponse
                 if let cached: EpisodesResponse = ResponseCache.shared.get(key) {
@@ -955,12 +966,12 @@ struct TVItemDetailView: View {
                     // hand back the old state, so read the server directly.
                     response = try await SiloAPI.shared.episodes(
                         seriesId: detail.contentId, seasonNumber: season.seasonNumber,
-                        libraryId: libraryId
+                        libraryId: libraryId, missing: viewModel.missingEpisodes
                     )
                 } else {
                     response = try await MetadataRequestPool.shared.episodes(
                         seriesId: detail.contentId, seasonNumber: season.seasonNumber,
-                        libraryId: libraryId
+                        libraryId: libraryId, missing: viewModel.missingEpisodes
                     )
                 }
                 guard !Task.isCancelled, viewModel.selectedSeason?.seasonNumber == selected,
@@ -1074,4 +1085,8 @@ struct TVItemDetailView: View {
     }
 }
 
+private struct MissingSeasonRequestsKey: Equatable {
+    let tmdbId: String?
+    let missing: MissingEpisodes
+}
 #endif

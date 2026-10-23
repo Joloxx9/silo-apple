@@ -17,6 +17,10 @@ class ItemDetailViewModel {
 
     var detail: ItemDetail?
     var error: ErrorState?
+    /// What the library lacks that the series page lists too. Only the series
+    /// page sets it; every other reader of seasons and episodes stays on the
+    /// library alone.
+    var missingEpisodes: MissingEpisodes = .none
 
     // Catalog metadata and the hierarchy finish independently. An empty array
     // is only an empty result after its request has succeeded.
@@ -558,7 +562,7 @@ class ItemDetailViewModel {
         }
         if let seriesId = seriesContentId,
            seasons.isEmpty,
-           let cached: SeasonsResponse = ResponseCache.shared.get(CacheKey.itemSeasons(seriesId, libraryId: libraryId)) {
+           let cached: SeasonsResponse = ResponseCache.shared.get(CacheKey.itemSeasons(seriesId, libraryId: libraryId, missing: missingEpisodes)) {
             seasons = cached.seasons.sortedForDisplay()
             seasonsLoadState = .loaded
         }
@@ -583,7 +587,7 @@ class ItemDetailViewModel {
             if let seasonNumber = selectedSeason?.seasonNumber,
                episodes.isEmpty,
                let cached: EpisodesResponse = ResponseCache.shared.get(
-                   CacheKey.itemEpisodes(seriesId: seriesId, seasonNumber: seasonNumber, libraryId: libraryId)
+                   CacheKey.itemEpisodes(seriesId: seriesId, seasonNumber: seasonNumber, libraryId: libraryId, missing: missingEpisodes)
                ) {
                 let sorted = cached.sortedEpisodes
                 episodes = sorted
@@ -834,11 +838,11 @@ class ItemDetailViewModel {
             }
         }
         if episodes.isEmpty, !isLoadingEpisodes { isLoadingEpisodes = true }
-        let fetchSeasons = fetchSeasons ?? { [libraryId] in
-            try await MetadataRequestPool.shared.seasons(seriesId: $0, libraryId: libraryId)
+        let fetchSeasons = fetchSeasons ?? { [libraryId, missingEpisodes] in
+            try await MetadataRequestPool.shared.seasons(seriesId: $0, libraryId: libraryId, missing: missingEpisodes)
         }
-        let fetchEpisodes = fetchEpisodes ?? { [libraryId] in
-            try await MetadataRequestPool.shared.episodes(seriesId: $0, seasonNumber: $1, libraryId: libraryId)
+        let fetchEpisodes = fetchEpisodes ?? { [libraryId, missingEpisodes] in
+            try await MetadataRequestPool.shared.episodes(seriesId: $0, seasonNumber: $1, libraryId: libraryId, missing: missingEpisodes)
         }
         async let episodeResponse = try? fetchEpisodes(contentId, seasonNumber)
         let seasonResponse = try? await fetchSeasons(contentId)
@@ -849,7 +853,7 @@ class ItemDetailViewModel {
 
         seasonsLoadState = seasonResponse == nil ? .failed : .loaded
         if let seasonResponse {
-            ResponseCache.shared.set(seasonResponse, for: CacheKey.itemSeasons(contentId, libraryId: libraryId))
+            ResponseCache.shared.set(seasonResponse, for: CacheKey.itemSeasons(contentId, libraryId: libraryId, missing: missingEpisodes))
             let sorted = seasonResponse.seasons.sortedForDisplay()
             if seasons != sorted { seasons = sorted }
         }
@@ -884,7 +888,7 @@ class ItemDetailViewModel {
         if let response, translatedEpisodePublications[seasonNumber, default: 0] == translationPublications {
             ResponseCache.shared.set(response, for: CacheKey.itemEpisodes(
                 seriesId: contentId, seasonNumber: seasonNumber,
-                libraryId: libraryId
+                libraryId: libraryId, missing: missingEpisodes
             ))
             let sorted = response.sortedEpisodes
             if episodesBySeason[seasonNumber] != sorted { episodesBySeason[seasonNumber] = sorted }
@@ -930,12 +934,12 @@ class ItemDetailViewModel {
             if let fetchSeasons {
                 response = try await fetchSeasons(seriesId)
             } else if coalescesMetadataRequest {
-                response = try await MetadataRequestPool.shared.seasons(seriesId: seriesId, libraryId: libraryId)
+                response = try await MetadataRequestPool.shared.seasons(seriesId: seriesId, libraryId: libraryId, missing: missingEpisodes)
             } else {
-                response = try await SiloAPI.shared.seasons(seriesId: seriesId, libraryId: libraryId)
+                response = try await SiloAPI.shared.seasons(seriesId: seriesId, libraryId: libraryId, missing: missingEpisodes)
             }
             guard !Task.isCancelled, generation == seasonsLoadGeneration else { return }
-            ResponseCache.shared.set(response, for: CacheKey.itemSeasons(seriesId, libraryId: libraryId))
+            ResponseCache.shared.set(response, for: CacheKey.itemSeasons(seriesId, libraryId: libraryId, missing: missingEpisodes))
             seasons = response.seasons.sortedForDisplay()
             seasonsLoadState = .loaded
             if seasons.isEmpty, selectionGeneration == episodeLoadGeneration,
@@ -1007,7 +1011,7 @@ class ItemDetailViewModel {
             let key = CacheKey.itemEpisodes(
                 seriesId: seriesId,
                 seasonNumber: season.seasonNumber,
-                libraryId: libraryId
+                libraryId: libraryId, missing: missingEpisodes
             )
             if let cached: EpisodesResponse = ResponseCache.shared.get(key) {
                 episodesBySeason[season.seasonNumber] = cached.sortedEpisodes
@@ -1017,7 +1021,7 @@ class ItemDetailViewModel {
         }
 
         guard !missing.isEmpty else { return }
-        seasonEpisodePrefetchTask = Task { [weak self, libraryId] in
+        seasonEpisodePrefetchTask = Task { [weak self, libraryId, missingEpisodes] in
             for batchStart in stride(from: 0, to: missing.count, by: 2) {
                 guard !Task.isCancelled else { return }
                 let batchEnd = min(batchStart + 2, missing.count)
@@ -1032,7 +1036,7 @@ class ItemDetailViewModel {
                             let response = try? await MetadataRequestPool.shared.episodes(
                                 seriesId: seriesId,
                                 seasonNumber: season.seasonNumber,
-                                libraryId: libraryId
+                                libraryId: libraryId, missing: missingEpisodes
                             )
                             return (season.seasonNumber, response)
                         }
@@ -1056,7 +1060,7 @@ class ItemDetailViewModel {
                         for: CacheKey.itemEpisodes(
                             seriesId: seriesId,
                             seasonNumber: seasonNumber,
-                            libraryId: libraryId
+                            libraryId: libraryId, missing: missingEpisodes
                         )
                     )
                     if self.episodesBySeason[seasonNumber] == nil {
@@ -1176,7 +1180,7 @@ class ItemDetailViewModel {
                     response = try await fetchEpisodes(seriesId, season.seasonNumber)
                 } else {
                     response = try await MetadataRequestPool.shared.episodes(
-                        seriesId: seriesId, seasonNumber: season.seasonNumber, libraryId: libraryId
+                        seriesId: seriesId, seasonNumber: season.seasonNumber, libraryId: libraryId, missing: missingEpisodes
                     )
                 }
             } catch {
@@ -1185,7 +1189,7 @@ class ItemDetailViewModel {
             guard !Task.isCancelled, seriesContentId == seriesId else { return false }
             ResponseCache.shared.set(
                 response,
-                for: CacheKey.itemEpisodes(seriesId: seriesId, seasonNumber: season.seasonNumber, libraryId: libraryId)
+                for: CacheKey.itemEpisodes(seriesId: seriesId, seasonNumber: season.seasonNumber, libraryId: libraryId, missing: missingEpisodes)
             )
             if episodesBySeason[season.seasonNumber] == nil {
                 episodesBySeason[season.seasonNumber] = response.sortedEpisodes
@@ -1217,7 +1221,7 @@ class ItemDetailViewModel {
         seriesContentId = seriesId
         selectedSeason = seasons.first { $0.seasonNumber == number }
         let cached: EpisodesResponse? = ResponseCache.shared.get(
-            CacheKey.itemEpisodes(seriesId: seriesId, seasonNumber: number, libraryId: libraryId)
+            CacheKey.itemEpisodes(seriesId: seriesId, seasonNumber: number, libraryId: libraryId, missing: missingEpisodes)
         )
         if let page = episodesBySeason[number] ?? cached?.sortedEpisodes {
             episodesBySeason[number] = page
@@ -1281,7 +1285,7 @@ class ItemDetailViewModel {
         defer {
             if generation == episodeLoadGeneration { isLoadingEpisodes = false }
         }
-        let key = CacheKey.itemEpisodes(seriesId: seriesId, seasonNumber: seasonNumber, libraryId: libraryId)
+        let key = CacheKey.itemEpisodes(seriesId: seriesId, seasonNumber: seasonNumber, libraryId: libraryId, missing: missingEpisodes)
 
         // Hydrate this page from either route memory or ResponseCache, then
         // refresh silently. Never leave the previous season's rows under a
@@ -1312,13 +1316,13 @@ class ItemDetailViewModel {
                 response = try await MetadataRequestPool.shared.episodes(
                     seriesId: seriesId,
                     seasonNumber: seasonNumber,
-                    libraryId: libraryId
+                    libraryId: libraryId, missing: missingEpisodes
                 )
             } else {
                 response = try await SiloAPI.shared.episodes(
                     seriesId: seriesId,
                     seasonNumber: seasonNumber,
-                    libraryId: libraryId
+                    libraryId: libraryId, missing: missingEpisodes
                 )
             }
             guard !Task.isCancelled, generation == episodeLoadGeneration else { return }
@@ -1643,9 +1647,11 @@ class ItemDetailViewModel {
         stopEpisodePagePrefetch()
         #endif
         for season in seasons where season.seasonNumber != selectedNumber {
-            ResponseCache.shared.remove(CacheKey.itemEpisodes(
-                seriesId: seriesId, seasonNumber: season.seasonNumber, libraryId: libraryId
-            ))
+            for missing in Set([MissingEpisodes.none, missingEpisodes]) {
+                ResponseCache.shared.remove(CacheKey.itemEpisodes(
+                    seriesId: seriesId, seasonNumber: season.seasonNumber, libraryId: libraryId, missing: missing
+                ))
+            }
         }
         episodesBySeason = episodesBySeason.filter { $0.key == selectedNumber }
         #if os(tvOS)
@@ -1715,7 +1721,7 @@ class ItemDetailViewModel {
         translatedEpisodePublications[seasonNumber, default: 0] += 1
         ResponseCache.shared.set(
             response,
-            for: CacheKey.itemEpisodes(seriesId: seriesId, seasonNumber: seasonNumber, libraryId: libraryId)
+            for: CacheKey.itemEpisodes(seriesId: seriesId, seasonNumber: seasonNumber, libraryId: libraryId, missing: missingEpisodes)
         )
         let sorted = response.sortedEpisodes
         episodesBySeason[seasonNumber] = sorted

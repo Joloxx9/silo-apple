@@ -1,6 +1,6 @@
 repository=https://github.com/Silo-Server/silo-server
 path=contracts/settings/v1
-manifest_revision=20
+manifest_revision=22
 fixture_version=1
 
 Both files are byte-identical copies of the server's canonical settings
@@ -32,4 +32,5 @@ contract rather than by a hand-copied table.
 
 Android vendors the same pair at
 shared/src/commonTest/resources/settings/v1/ in silo-android; the two SOURCE
-notes are meant to stay in step. This copy is revision 20.
+notes are meant to stay in step. This copy is revision 22, from the
+Joloxx9/silo-server fork branch missing-seasons (adds catalog.show_missing_episodes).

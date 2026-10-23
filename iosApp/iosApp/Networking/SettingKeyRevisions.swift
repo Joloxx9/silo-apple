@@ -57,6 +57,8 @@ extension SettingKey {
             return 17
         case .uiNextUpNewReleasesFirst:
             return 18
+        case .catalogShowMissingEpisodes:
+            return 22
         case .playbackCellularPreferredQuality, .playbackCellularMaxBitrateKbps:
             return Self.cellularQualityRevision
         case .catalogMetadataLanguage, .downloadsDefaultQuality, .downloadsKeepWatched,

@@ -87,6 +87,7 @@ enum APIv2CatalogRead {
         let seasonNumber: Int64
         let title: String
         let userData: WatchRollup?
+        let missingEpisodeCount: Int64?
     }
 
     struct Episode: Decodable {
@@ -107,6 +108,7 @@ enum APIv2CatalogRead {
         let tmdbId: String?
         let tvdbId: String?
         let userData: WatchRollup?
+        let availability: String?
     }
 
     struct Person: Decodable {

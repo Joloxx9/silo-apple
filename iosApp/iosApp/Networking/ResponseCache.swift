@@ -218,9 +218,12 @@ enum CacheKey {
             .replacingOccurrences(of: ":", with: "%3A")
         return "item:\(encodedId)" + (libraryId.map { ":library:\($0)" } ?? "")
     }
-    static func itemSeasons(_ seriesId: String, libraryId: Int? = nil) -> String { "\(itemDetail(seriesId, libraryId: libraryId)):seasons" }
-    static func itemEpisodes(seriesId: String, seasonNumber: Int, libraryId: Int? = nil) -> String {
-        "\(itemDetail(seriesId, libraryId: libraryId)):season:\(seasonNumber):episodes"
+    static func itemSeasons(_ seriesId: String, libraryId: Int? = nil, missing: MissingEpisodes = .none) -> String {
+        "\(itemDetail(seriesId, libraryId: libraryId)):seasons" + missing.cacheKeySuffix
+    }
+    static func itemEpisodes(seriesId: String, seasonNumber: Int, libraryId: Int? = nil,
+                             missing: MissingEpisodes = .none) -> String {
+        "\(itemDetail(seriesId, libraryId: libraryId)):season:\(seasonNumber):episodes" + missing.cacheKeySuffix
     }
     static func itemUserState(_ contentId: String) -> String { "\(itemDetail(contentId)):userState" }
     static func itemWatchDetail(_ contentId: String, libraryId: Int? = nil) -> String { "\(itemDetail(contentId, libraryId: libraryId)):watchDetail" }

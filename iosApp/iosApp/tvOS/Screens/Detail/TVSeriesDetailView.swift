@@ -240,6 +240,11 @@ struct TVSeriesDetailView: View {
     /// item keeps the action reachable without adding a focus stop to the
     /// hero, whose synopsis is deliberately not focusable.
     var onTranslateDescription: (() -> Void)? = nil
+    /// Seasons a request or a download server already covers.
+    var requestedSeasons: Set<Int> = []
+    /// Requests one missing season and reports whether the server took it;
+    /// nil while no download server takes series requests.
+    var onRequestSeason: ((Int) async -> Bool)? = nil
 
     @Namespace private var detailFocusNamespace
     @Namespace private var modeFocusNamespace
@@ -265,6 +270,9 @@ struct TVSeriesDetailView: View {
     @State private var pageScrollCoordinator = PageScrollCoordinator()
     @State private var uiCustomization = UICustomizationPreferences.shared
     @State private var shuffleLauncher = ShuffleLauncher()
+    @State private var seasonRequestPrompt: Int?
+    @State private var isRequestingSeason = false
+    @State private var seasonRequestFailed = false
     @ObservedObject private var profilePrefsStore = ProfilePrefsStore.shared
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -349,6 +357,24 @@ struct TVSeriesDetailView: View {
         }
         .personalStateNoticeAlert($seasonWatchedNotice)
         .shuffleFailureAlert(shuffleLauncher)
+        .alert(
+            seasonRequestPrompt.map { "Request Season \($0)?" } ?? "",
+            isPresented: Binding(
+                get: { seasonRequestPrompt != nil },
+                set: { if !$0 { seasonRequestPrompt = nil } }
+            ),
+            presenting: seasonRequestPrompt
+        ) { season in
+            Button("Request") { submitSeasonRequest(season) }
+            Button("Cancel", role: .cancel) {}
+        } message: { _ in
+            Text("Silo asks your download server for the season's episodes.")
+        }
+        .alert("Couldn't Request the Season", isPresented: $seasonRequestFailed) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text("Please check your connection and try again.")
+        }
     }
 
     // MARK: - Fixed series hero
@@ -392,6 +418,7 @@ struct TVSeriesDetailView: View {
                 showForcedSubtitles: matchingPlaybackDetail?.showsForcedSubtitles ?? true
             ),
             showsPlaybackSummary: isLoadingEpisodes || playbackEpisode != nil,
+            availabilityNote: playbackEpisode.flatMap(availabilityNote(for:)),
             backdropHeight: TVDetailLayout.heroHeight,
             // The hero shares the standard height and title inset with Movie
             // so the first viewport bottoms out on the episode rail: the season
@@ -503,6 +530,10 @@ struct TVSeriesDetailView: View {
             onPlay: {
                 userNavigated = true
                 guard let episode = playbackEpisode else { return }
+                if episode.availability != nil {
+                    promptSeasonRequest(episode.seasonNumber)
+                    return
+                }
                 onPlayEpisode(episode.contentId, selectedFileId(for: episode), false)
             },
             onStartOver: playbackEpisode?.userData?.isInProgress == true
@@ -527,10 +558,13 @@ struct TVSeriesDetailView: View {
             isPlaybackLoading: isLoadingEpisodes && playbackEpisode == nil,
             allowsInitialPlayFocus: !userNavigated,
             tracksInitialFocusNavigation: true,
+            playIcon: playbackEpisode.map(playIcon(for:)) ?? "play.fill",
             playbackSelectors: {
                 // Keep all three triggers mounted while a newly focused
                 // episode's playback detail loads. They disable themselves
                 // until a valid version arrives, preserving every x-position.
+                // An episode the library lacks has nothing to choose from.
+                if playbackEpisode?.availability == nil {
                 TVPlaybackActionSelectors(
                     versions: nextUpVersions,
                     currentVersion: effectiveNextUpVersion,
@@ -549,12 +583,16 @@ struct TVSeriesDetailView: View {
                     onSelectAudioTrack: onSelectNextUpAudioTrack,
                     onSelectSubtitleTrack: onSelectNextUpSubtitleTrack
                 )
+                }
             },
             moreMenu: { moreMenu }
         )
     }
 
     private func showPlayTitle(for episode: EpisodeListItem) -> String {
+        if episode.availability != nil {
+            return missingEpisodeActionTitle(season: episode.seasonNumber)
+        }
         let verb = episode.userData?.isInProgress == true ? "Resume" : "Play"
         return "\(verb) S\(episode.seasonNumber):E\(episode.episodeNumber)"
     }
@@ -613,11 +651,19 @@ struct TVSeriesDetailView: View {
                             action: {
                                 userNavigated = true
                                 activateSeason(season)
-                            }
+                            },
+                            isMissing: season.isMissing
                         )
                         .id(season.id)
                         .focused($focusedModeId, equals: season.id)
                         .contextMenu {
+                            if season.missingEpisodeCount > 0, canRequestSeason(season.seasonNumber) {
+                                Button {
+                                    promptSeasonRequest(season.seasonNumber)
+                                } label: {
+                                    Label("Request Season \(season.seasonNumber)", systemImage: "arrow.down.circle")
+                                }
+                            }
                             Button {
                                 setSeasonWatched(season)
                             } label: {
@@ -828,6 +874,7 @@ struct TVSeriesDetailView: View {
                 onSetWatched: onSetEpisodeWatched,
                 onSetFavorite: onSetEpisodeFavorite,
                 onSetWatchlist: onSetEpisodeWatchlist,
+                requestedSeasons: requestedSeasons,
                 currentContentId: displayedEpisode?.contentId,
                 favoriteStates: episodeFavoriteStates,
                 watchlistStates: episodeWatchlistStates,
@@ -910,6 +957,9 @@ struct TVSeriesDetailView: View {
         isShowingSeriesOverview = false
         onActivateEpisode(contentId)
         let episode = episodeWindow.episodes.first(where: { $0.contentId == contentId })
+        // An episode the library lacks has nothing to play; its season's
+        // request is on the season tab and the hero's primary button.
+        if let episode, episode.availability != nil { return }
         onPlayEpisode(
             contentId,
             episode.flatMap { selectedFileId(for: $0) },
@@ -1094,6 +1144,53 @@ struct TVSeriesDetailView: View {
             : nil
     }
 
+    // MARK: - Missing seasons
+
+    /// The hero's primary button for an episode the library lacks.
+    private func missingEpisodeActionTitle(season: Int) -> String {
+        if requestedSeasons.contains(season) { return "Season \(season) Requested" }
+        if onRequestSeason != nil { return "Request Season \(season)" }
+        return "Not in Library"
+    }
+
+    private func playIcon(for episode: EpisodeListItem) -> String {
+        guard episode.availability != nil else { return "play.fill" }
+        return requestedSeasons.contains(episode.seasonNumber) ? "checkmark" : ""
+    }
+
+    /// What the hero says in place of the playback readout for an episode
+    /// the library lacks.
+    private func availabilityNote(for episode: EpisodeListItem) -> String? {
+        guard let availability = episode.availability else { return nil }
+        let state = availability == .unaired ? "Not aired yet" : "Not in your library"
+        if requestedSeasons.contains(episode.seasonNumber) {
+            return "\(state) · Season \(episode.seasonNumber) requested"
+        }
+        return state
+    }
+
+    private func canRequestSeason(_ season: Int) -> Bool {
+        onRequestSeason != nil && !requestedSeasons.contains(season)
+    }
+
+    /// Asks before requesting: Select on a card otherwise plays, so a request
+    /// should never go out from a single press.
+    private func promptSeasonRequest(_ season: Int) {
+        guard canRequestSeason(season), !isRequestingSeason else { return }
+        seasonRequestPrompt = season
+    }
+
+    private func submitSeasonRequest(_ season: Int) {
+        guard let onRequestSeason, !isRequestingSeason else { return }
+        isRequestingSeason = true
+        Task {
+            defer { isRequestingSeason = false }
+            if !(await onRequestSeason(season)) {
+                seasonRequestFailed = true
+            }
+        }
+    }
+
     private func seasonLabel(_ season: Season) -> String {
         if let title = season.title, !title.isEmpty { return title }
         if season.seasonNumber == 0 { return "Specials" }
@@ -1204,6 +1301,8 @@ struct TVSeriesModeTab: View {
     let isSelected: Bool
     let rendersFocusedAppearance: Bool
     let action: () -> Void
+    /// A season the library holds none of reads dimmed until focused.
+    var isMissing = false
 
     var body: some View {
         Button(action: action) {
@@ -1215,7 +1314,8 @@ struct TVSeriesModeTab: View {
         .buttonStyle(
             TVSeriesModeTabStyle(
                 isSelected: isSelected,
-                rendersFocusedAppearance: rendersFocusedAppearance
+                rendersFocusedAppearance: rendersFocusedAppearance,
+                isMissing: isMissing
             )
         )
         .accessibilityAddTraits(isSelected ? .isSelected : [])
@@ -1225,10 +1325,11 @@ struct TVSeriesModeTab: View {
 private struct TVSeriesModeTabStyle: ButtonStyle {
     let isSelected: Bool
     let rendersFocusedAppearance: Bool
+    var isMissing = false
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .foregroundColor(rendersFocusedAppearance ? .black : .white)
+            .foregroundColor(rendersFocusedAppearance ? .black : .white.opacity(isMissing ? 0.45 : 1))
             .background(
                 Capsule().fill(
                     rendersFocusedAppearance

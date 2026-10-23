@@ -100,12 +100,14 @@ final class MetadataRequestPool: Sendable {
     private struct SeasonsKey: Hashable, Sendable {
         let scope: RequestScope
         let seriesID: String
+        let missing: MissingEpisodes
     }
 
     private struct EpisodesKey: Hashable, Sendable {
         let scope: RequestScope
         let seriesID: String
         let seasonNumber: Int
+        let missing: MissingEpisodes
     }
 
     private struct WatchDetailKey: Hashable, Sendable {
@@ -141,24 +143,27 @@ final class MetadataRequestPool: Sendable {
         }
     }
 
-    func seasons(seriesId: String, libraryId: Int? = nil) async throws -> SeasonsResponse {
-        let key = SeasonsKey(scope: await requestScope(libraryId: libraryId), seriesID: seriesId)
+    func seasons(seriesId: String, libraryId: Int? = nil, missing: MissingEpisodes = .none) async throws -> SeasonsResponse {
+        let key = SeasonsKey(scope: await requestScope(libraryId: libraryId), seriesID: seriesId, missing: missing)
         return try await seasonsFlights.value(for: key) {
-            try await self.api.seasons(seriesId: seriesId, libraryId: libraryId)
+            try await self.api.seasons(seriesId: seriesId, libraryId: libraryId, missing: missing)
         }
     }
 
-    func episodes(seriesId: String, seasonNumber: Int, libraryId: Int? = nil) async throws -> EpisodesResponse {
+    func episodes(seriesId: String, seasonNumber: Int, libraryId: Int? = nil,
+                  missing: MissingEpisodes = .none) async throws -> EpisodesResponse {
         let key = EpisodesKey(
             scope: await requestScope(libraryId: libraryId),
             seriesID: seriesId,
-            seasonNumber: seasonNumber
+            seasonNumber: seasonNumber,
+            missing: missing
         )
         return try await episodesFlights.value(for: key) {
             try await self.api.episodes(
                 seriesId: seriesId,
                 seasonNumber: seasonNumber,
-                libraryId: libraryId
+                libraryId: libraryId,
+                missing: missing
             )
         }
     }
