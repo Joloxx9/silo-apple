@@ -613,12 +613,7 @@ final class DownloadManager {
         // One write to `file`: each one rebuilds the indexes and the Live
         // Activity.
         var records = file.records
-        var removedIds: [String] = []
-        for id in ids {
-            guard var record = records.removeValue(forKey: id) else { continue }
-            stopActiveWork(on: &record)
-            removedIds.append(id)
-        }
+        let removedIds = removeRecords(ids, from: &records)
         guard !removedIds.isEmpty else { return }
         file.records = records
         // Persist before removing files, so a crash in between never leaves a
@@ -630,6 +625,20 @@ final class DownloadManager {
         queueServerDeletes(removedIds)
         processQueue()
         refreshStorageUsage()
+    }
+
+    /// Takes the records for `ids` out of `records` and stops their
+    /// transfers. Returns the ids that had a record. The caller writes
+    /// `records` to `file` and persists before removing their directories,
+    /// so a crash in between never leaves a record pointing at deleted media.
+    private func removeRecords(_ ids: [String], from records: inout [String: DownloadRecord]) -> [String] {
+        var removedIds: [String] = []
+        for id in ids {
+            guard var record = records.removeValue(forKey: id) else { continue }
+            stopActiveWork(on: &record)
+            removedIds.append(id)
+        }
+        return removedIds
     }
 
     /// One-time hydration of `seasonNumber`/`episodeNumber`/`seriesTitle` for
@@ -2692,12 +2701,19 @@ final class DownloadManager {
         // confirms its DELETE. The others stay hidden until theirs lands.
         let pendingDeletes = (file.pendingServerDeletes ?? []).intersection(listed.map(\.id))
         file.pendingServerDeletes = pendingDeletes.isEmpty ? nil : pendingDeletes
-        let rows = listed.filter { !pendingDeletes.contains($0.id) }
+        // Revoked by an administrator: the local copy goes, then the entry.
+        // The rows are neither merged nor imported.
+        let revokedIds = Self.revokedEntryIds(
+            in: listed.filter { !pendingDeletes.contains($0.id) },
+            removesLocal: capability?.revokedRemovesLocal == true
+        )
+        let rows = listed.filter { !pendingDeletes.contains($0.id) && !revokedIds.contains($0.id) }
         let byId = Dictionary(rows.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
 
         // One write for the whole pass: every write to `file` rebuilds indexes
         // and the Live Activity, which is costly per record in a large store.
         var records = file.records
+        let revokedRecordIds = removeRecords(revokedIds.sorted(), from: &records)
         for (id, original) in records {
             if let row = byId[id] {
                 var record = mergeExistingRecord(original, with: row)
@@ -2756,8 +2772,18 @@ final class DownloadManager {
             file.legacyRowsPending = nil
         }
         persist()
+        // Every revoked id, not only those that still had a record: a pass
+        // interrupted after persisting the removal left its folder behind.
+        for id in revokedIds {
+            removeDownloadDirectory(recordId: id)
+        }
         // Also sends the DELETEs still pending from an earlier pass.
-        queueServerDeletes(legacyRowIds)
+        queueServerDeletes(legacyRowIds + revokedIds.sorted())
+        if !revokedRecordIds.isEmpty {
+            Self.logger.notice("Removed \(revokedRecordIds.count, privacy: .public) downloads an administrator revoked")
+            processQueue()
+            refreshStorageUsage()
+        }
         reportPendingStatusEvents()
 
         await reconnectActiveTasks()
@@ -2902,6 +2928,15 @@ final class DownloadManager {
         legacyRowsPending: Bool
     ) -> (imported: [APIv2DownloadEntry], legacy: [APIv2DownloadEntry]) {
         legacyRowsPending ? ([], rows) : (rows, [])
+    }
+
+    /// The registry rows whose local copy must go: with
+    /// `revoked_removes_local`, a `revoked` row was revoked by an
+    /// administrator, so the app deletes its files and then the entry. A
+    /// server without the flag keeps revoked files playable.
+    nonisolated static func revokedEntryIds(in rows: [APIv2DownloadEntry], removesLocal: Bool) -> Set<String> {
+        guard removesLocal else { return [] }
+        return Set(rows.lazy.filter { $0.status == "revoked" }.map(\.id))
     }
 
     // MARK: - Registry writes

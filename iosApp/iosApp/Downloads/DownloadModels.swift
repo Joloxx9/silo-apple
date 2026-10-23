@@ -26,6 +26,9 @@ struct DownloadCapability: Codable, Hashable, Sendable {
     let bulkQuality: Bool
     /// Monitors store a quality; without it they download originals.
     let monitorQuality: Bool
+    /// A `revoked` entry was revoked by an administrator: delete the local
+    /// copy, then the entry. Without it revoked files stay playable.
+    let revokedRemovesLocal: Bool
 
     /// Downloads are usable only when the capability is available and this
     /// principal may use it.
@@ -51,6 +54,7 @@ struct DownloadCapability: Codable, Hashable, Sendable {
         case monitoringModes
         case bulkQuality
         case monitorQuality
+        case revokedRemovesLocal
     }
 
     init(_ wire: APIv2DownloadCapability) {
@@ -69,6 +73,7 @@ struct DownloadCapability: Codable, Hashable, Sendable {
         monitoringModes = wire.monitoringModes
         bulkQuality = wire.bulkQuality ?? false
         monitorQuality = wire.monitorQuality ?? false
+        revokedRemovesLocal = wire.revokedRemovesLocal ?? false
     }
 
     /// Reads the cached copy. A copy cached before `state` and `allowed`
@@ -88,6 +93,7 @@ struct DownloadCapability: Codable, Hashable, Sendable {
         monitoringModes = try container.decode([String].self, forKey: .monitoringModes)
         bulkQuality = try container.decodeIfPresent(Bool.self, forKey: .bulkQuality) ?? false
         monitorQuality = try container.decodeIfPresent(Bool.self, forKey: .monitorQuality) ?? false
+        revokedRemovesLocal = try container.decodeIfPresent(Bool.self, forKey: .revokedRemovesLocal) ?? false
     }
 }
 
