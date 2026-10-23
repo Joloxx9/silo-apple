@@ -166,16 +166,17 @@ final class AppRouter {
     /// keeping the content id itself available to the sheet root.
     struct ItemDetailPresentation: Identifiable, Equatable {
         let id = UUID()
-        let contentId: String
+        var contentId: String
         let libraryId: Int?
-        let resumeContext: SeriesDetailContext?
+        var resumeContext: SeriesDetailContext?
         /// Set when the card opens on a request detail (a TMDB title) rather
         /// than a catalog item; `contentId` is then only a page identity.
         let request: RequestRoot?
-        /// Presented as a sheet as large as the window instead of a page
-        /// sheet. Fixed when the detail opens (see `presentsItemDetailFullWindow`), so folding
-        /// or rotating never swaps the presentation, and the player above it,
-        /// out from under the user.
+        /// Presented as large as the window instead of as a page sheet: a
+        /// window-sized sheet on iPad, a full-screen cover on iPhone, where
+        /// iOS 27.1 caps sheets well short of the iPhone Duo's open display.
+        /// Set when the detail opens and refit when the window changes shape
+        /// (see `refitItemDetail`), once nothing covers the detail.
         var fillsWindow = false
 
         struct RequestRoot: Equatable {
@@ -201,21 +202,56 @@ final class AppRouter {
     #if os(iOS)
     var presentedItemDetail: ItemDetailPresentation?
     var itemDetailPath = NavigationPath()
+    /// How far a sideways swipe has moved the detail card aside, from 0 to
+    /// 1. The glass that hides the page under the card fades to match.
+    var itemDetailSwipeProgress: CGFloat = 0
     /// Kept current by the tab view: true while its window would split a
     /// detail page (see `PhoneDetailHeroLayout.usesSplitLayout`), as on an
     /// iPad or the iPhone Duo's open display held in landscape. A page sheet
     /// there is a centered card (about 930 x 710 on an 11-inch iPad) over a
     /// near-black dimmed page, so details opened then fill the window.
     var presentsItemDetailFullWindow = false
+    /// Set by the open detail while its TV remote or a TV picker is up.
+    /// They live in the detail's own state, which a refit would discard.
+    var itemDetailShowsControl = false
+    /// The season and episode chosen on the open detail's series page, so a
+    /// refit reopens it there rather than where it first opened.
+    @ObservationIgnored private var itemDetailSeriesSelection: SeriesDetailContext?
 
     /// Opens or restores the detail card in the presentation the window calls
     /// for now. Request details stay sheets: their page has no split layout.
     private func openItemDetail(_ presentation: ItemDetailPresentation?) {
+        if presentation?.id != presentedItemDetail?.id {
+            itemDetailSeriesSelection = nil
+        }
         presentedItemDetail = presentation.map { presentation in
             var presentation = presentation
-            presentation.fillsWindow = presentsItemDetailFullWindow && presentation.request == nil
+            presentation.fillsWindow = fillsWindow(presentation)
             return presentation
         }
+    }
+
+    private func fillsWindow(_ presentation: ItemDetailPresentation) -> Bool {
+        presentsItemDetailFullWindow && presentation.request == nil
+    }
+
+    /// Moves an open detail to the presentation the window now calls for,
+    /// as when the iPhone Duo unfolds. Skipped while a player, the TV
+    /// remote, or a TV picker is up over the detail, since the move would
+    /// close it; each calls this again once it has dismissed.
+    func refitItemDetail() {
+        guard presentedPlayer == nil, !itemDetailShowsControl, var presentation = presentedItemDetail,
+              presentation.fillsWindow != fillsWindow(presentation)
+        else { return }
+        if let selection = itemDetailSeriesSelection {
+            presentation.contentId = selection.seriesContentId
+            presentation.resumeContext = selection
+        }
+        openItemDetail(presentation)
+    }
+
+    func itemDetailSeriesSelectionDidChange(_ selection: SeriesDetailContext) {
+        itemDetailSeriesSelection = selection
     }
     #endif
 
@@ -617,6 +653,7 @@ final class AppRouter {
         // callback from an old sheet must not erase a newly opened detail.
         guard presentedItemDetail == nil else { return }
         itemDetailPath = NavigationPath()
+        itemDetailShowsControl = false
     }
     #endif
 
@@ -702,6 +739,7 @@ final class AppRouter {
         #if os(iOS)
         presentedItemDetail = nil
         itemDetailPath = NavigationPath()
+        itemDetailSwipeProgress = 0
         #endif
     }
 

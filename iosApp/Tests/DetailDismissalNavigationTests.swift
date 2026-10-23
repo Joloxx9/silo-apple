@@ -41,6 +41,50 @@ final class DetailDismissalNavigationTests: XCTestCase {
         XCTAssertNotNil(router.presentedItemDetail)
     }
 
+    func testUnfoldingRefitsTheDetailOnlyOnceNothingCoversIt() throws {
+        let router = AppRouter()
+        router.presentItemDetail(contentId: "movie", libraryId: 4)
+        let opened = try XCTUnwrap(router.presentedItemDetail)
+        XCTAssertFalse(opened.fillsWindow)
+
+        // The window grows while a player is up, then while the TV remote is.
+        router.presentPlayer(contentId: "movie")
+        router.presentsItemDetailFullWindow = true
+        router.refitItemDetail()
+        XCTAssertEqual(router.presentedItemDetail, opened)
+        router.dismissPlayerPresentation(id: try XCTUnwrap(router.presentedPlayer).id)
+        router.itemDetailShowsControl = true
+        router.refitItemDetail()
+        XCTAssertEqual(router.presentedItemDetail, opened)
+
+        router.itemDetailShowsControl = false
+        router.refitItemDetail()
+        XCTAssertEqual(router.presentedItemDetail?.id, opened.id)
+        XCTAssertEqual(router.presentedItemDetail?.fillsWindow, true)
+
+        // A refit reopens a series on the season and episode chosen in it.
+        let chosen = SeriesDetailContext(seriesContentId: "series", episodeContentId: "s2e3", seasonNumber: 2)
+        router.itemDetailSeriesSelectionDidChange(chosen)
+        router.presentsItemDetailFullWindow = false
+        router.refitItemDetail()
+        XCTAssertEqual(router.presentedItemDetail?.id, opened.id)
+        XCTAssertEqual(router.presentedItemDetail?.contentId, "series")
+        XCTAssertEqual(router.presentedItemDetail?.resumeContext, chosen)
+
+        // Closing the detail can't leave the next one waiting.
+        router.itemDetailShowsControl = true
+        router.presentedItemDetail = nil
+        router.itemDetailPresentationDidDismiss()
+        XCTAssertFalse(router.itemDetailShowsControl)
+
+        // Nor can a closed detail's selection carry into the next one.
+        router.presentItemDetail(contentId: "movie", libraryId: 4)
+        router.presentsItemDetailFullWindow = true
+        router.refitItemDetail()
+        XCTAssertEqual(router.presentedItemDetail?.contentId, "movie")
+        XCTAssertNil(router.presentedItemDetail?.resumeContext)
+    }
+
     func testPartyWaitsForPickerDismissalAndCannotReopenAfterTermination() {
         let router = AppRouter()
         let context = WatchPartyPlaybackContext(roomId: "room", selectionRevision: 1,
@@ -674,4 +718,21 @@ final class DetailDismissalNavigationTests: XCTestCase {
         XCTAssertFalse(DetailDismissalPolicy.shouldCompleteBack(translation: .init(x: 0, y: -10), velocity: .zero))
         XCTAssertFalse(DetailDismissalPolicy.shouldCompleteBack(translation: .init(x: 120, y: 110), velocity: .zero))
     }
+
+    #if os(iOS)
+    /// Back is a swipe to the right, or to the left in right-to-left layouts.
+    func testSwipeBackStartsOnlyOnAMostlySidewaysSwipeTowardBack() {
+        XCTAssertTrue(DetailSwipeBackPolicy.canBegin(velocity: .init(x: 500, y: 100), direction: 1))
+        XCTAssertTrue(DetailSwipeBackPolicy.canBegin(velocity: .init(x: -500, y: 100), direction: -1))
+        XCTAssertFalse(DetailSwipeBackPolicy.canBegin(velocity: .init(x: -500, y: 0), direction: 1))
+        XCTAssertFalse(DetailSwipeBackPolicy.canBegin(velocity: .init(x: 200, y: 400), direction: 1))
+    }
+
+    func testSwipeBackNeedsADistanceOrAFlickAndAllowsCancel() {
+        XCTAssertTrue(DetailSwipeBackPolicy.shouldComplete(translation: 170, velocity: 0, width: 466))
+        XCTAssertTrue(DetailSwipeBackPolicy.shouldComplete(translation: 45, velocity: 900, width: 466))
+        XCTAssertFalse(DetailSwipeBackPolicy.shouldComplete(translation: 120, velocity: 100, width: 466))
+        XCTAssertFalse(DetailSwipeBackPolicy.shouldComplete(translation: 20, velocity: 1200, width: 466))
+    }
+    #endif
 }

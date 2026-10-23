@@ -526,7 +526,7 @@ struct LibraryCollectionsView: View {
         }
         if usesThreeColumnPhoneLayout {
             return Array(
-                repeating: GridItem(.flexible(), spacing: 12),
+                repeating: GridItem(.flexible(), spacing: 8),
                 count: 3
             )
         }
@@ -637,7 +637,7 @@ struct LibraryCollectionsView: View {
         return AdaptiveColumns.fittedPosterWidth(
             containerWidth: gridWidth,
             columnCount: 3,
-            spacing: 12
+            spacing: 8
         )
     }
 }
@@ -679,7 +679,12 @@ private struct LibraryCollectionCard: View {
                 Text(collection.name)
                     .font(.siloCaption)
                     .foregroundStyle(Color.siloOnSurface)
+                    #if os(iOS)
+                    // One line, like the 2:3 cards in the other iOS grids.
+                    .lineLimit(1)
+                    #else
                     .lineLimit(2, reservesSpace: true)
+                    #endif
             }
 
             if uiCustomization.cardPresentation.caption.showsMetadata {

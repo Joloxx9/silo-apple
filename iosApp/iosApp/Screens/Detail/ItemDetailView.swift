@@ -8,6 +8,8 @@ struct ItemDetailView: View {
     var tvSeed: TVItemDetailRouteSeed? = nil
     var onClose: (() -> Void)? = nil
     var resumeContext: SeriesDetailContext? = nil
+    /// Reports the season and episode chosen on a series page.
+    var onSeriesSelection: ((SeriesDetailContext) -> Void)? = nil
 
     @State private var resolvedSeries: SeriesDetailContext?
     @State private var resolvedSourceID: String?
@@ -36,7 +38,7 @@ struct ItemDetailView: View {
         #else
         ItemDetailPhoneContent(
             contentId: destinationID, libraryId: libraryId, onClose: onClose,
-            resumeContext: context, onResolveSeries: resolve
+            resumeContext: context, onResolveSeries: resolve, onSeriesSelection: onSeriesSelection
         )
         .id(CacheKey.itemDetail(destinationID, libraryId: libraryId))
         .environment(\.browseLibraryId, libraryId)
@@ -104,11 +106,14 @@ struct PhoneDetailTopChrome: View {
     @Environment(\.verticalSizeClass) private var verticalSizeClass
     /// The chrome spans the detail page, so its width is the hero's width.
     @State private var pageWidth: CGFloat = 0
+    #if os(iOS)
+    @State private var statusColumn: StatusColumnLayout?
+    #endif
 
     /// Follows the hero's own compact/expanded choice, so the strip and the
     /// title arrive as that hero's title scrolls away.
     private var scrollGlass: PhoneDetailScrollGlassTiming? {
-        guard isScrollGlassEnabled else { return nil }
+        guard isScrollGlassEnabled, !isBesideStatusColumn else { return nil }
         return .forHero(isExpanded: PhoneDetailHeroLayout.usesExpandedLayout(
             availableWidth: pageWidth,
             horizontalSizeClass: horizontalSizeClass,
@@ -143,24 +148,64 @@ struct PhoneDetailTopChrome: View {
 
                 Spacer(minLength: 20)
 
-                if let trailingSystemName, let onTrailingTap {
-                    Button(action: onTrailingTap) {
-                        controlIcon(systemName: trailingSystemName, size: 16)
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("Remote Control")
+                if !isBesideStatusColumn {
+                    trailingButton
                 }
             }
             .padding(.horizontal, 18)
             .padding(.top, 9)
         }
+        #if os(iOS)
+        .overlay(alignment: statusColumn?.edge == .leading ? .topLeading : .topTrailing) {
+            if let statusColumn {
+                // In the status column, where the tab pages keep the same
+                // action under the time and connection status.
+                trailingButton
+                    .statusColumnCentered(statusColumn)
+                    .padding(.top, StatusColumnBar.actionsTop - Self.cardTopInset)
+                    .ignoresSafeArea(edges: statusColumn.edgeSet)
+            }
+        }
+        #endif
         .onGeometryChange(for: CGFloat.self) { proxy in
             proxy.size.width
         } action: { width in
             guard abs(width - pageWidth) > 1 else { return }
             pageWidth = width
         }
+        #if os(iOS)
+        .onGeometryChange(for: StatusColumnLayout?.self) { proxy in
+            StatusColumnLayout(safeArea: proxy.safeAreaInsets)
+        } action: { column in
+            statusColumn = column
+        }
+        #endif
         .zIndex(20)
+    }
+
+    /// Beside the iPhone Duo's status column the buttons keep their own
+    /// glass and no strip runs across the top: a strip there ends at the
+    /// column in a hard edge.
+    private var isBesideStatusColumn: Bool {
+        #if os(iOS)
+        statusColumn != nil
+        #else
+        false
+        #endif
+    }
+
+    /// How far below the top of the screen the detail card starts.
+    private static let cardTopInset: CGFloat = 8
+
+    @ViewBuilder
+    private var trailingButton: some View {
+        if let trailingSystemName, let onTrailingTap {
+            Button(action: onTrailingTap) {
+                controlIcon(systemName: trailingSystemName, size: 16)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Remote Control")
+        }
     }
 
     private func controlIcon(systemName: String, size: CGFloat) -> some View {
@@ -322,13 +367,18 @@ private struct ItemDetailPhoneContent: View {
     var resumeContext: SeriesDetailContext? = nil
 
     let onResolveSeries: ((SeriesDetailContext) -> Void)?
+    let onSeriesSelection: ((SeriesDetailContext) -> Void)?
 
-    init(contentId: String, libraryId: Int?, onClose: (() -> Void)?, resumeContext: SeriesDetailContext?, onResolveSeries: ((SeriesDetailContext) -> Void)?) {
+    init(
+        contentId: String, libraryId: Int?, onClose: (() -> Void)?, resumeContext: SeriesDetailContext?,
+        onResolveSeries: ((SeriesDetailContext) -> Void)?, onSeriesSelection: ((SeriesDetailContext) -> Void)?
+    ) {
         self.contentId = contentId
         self.libraryId = libraryId
         self.onClose = onClose
         self.resumeContext = resumeContext
         self.onResolveSeries = onResolveSeries
+        self.onSeriesSelection = onSeriesSelection
         // Paint cached content on the first frame, so a warm visit pushes a
         // filled page rather than an empty one that fills in from `.task`.
         let viewModel = ItemDetailViewModel(libraryId: libraryId)
@@ -372,12 +422,28 @@ private struct ItemDetailPhoneContent: View {
     @State private var isSplitPage = false
     @Environment(\.verticalSizeClass) private var verticalSizeClass
     #if os(iOS)
+    /// Beside the iPhone Duo's status column, where the TV remote covers the
+    /// window.
+    @State private var isBesideStatusColumn = false
     @Environment(SiloControlClient.self) private var siloControl
     @State private var controlRequestBox: ControlRequestBox?
     /// The cast button's in-flight watch-state read. A second tap replaces it.
     @State private var controlResumeLookupTask: Task<Void, Never>?
     @State private var isShowingControlPicker = false
     @State private var isShowingRemoteControl = false
+
+    private var seriesSelection: SeriesDetailContext? {
+        guard viewModel.detail?.type == "series" else { return nil }
+        return SeriesDetailContext(
+            seriesContentId: contentId,
+            episodeContentId: selectedSeriesEpisodeId,
+            seasonNumber: viewModel.selectedSeason?.seasonNumber
+        )
+    }
+
+    private var isShowingControl: Bool {
+        controlRequestBox != nil || isShowingControlPicker || isShowingRemoteControl
+    }
     #endif
     @Environment(AppRouter.self) private var router
 
@@ -570,15 +636,29 @@ private struct ItemDetailPhoneContent: View {
         } action: { isSplit in
             isSplitPage = isSplit
         }
-        .sheet(item: $controlRequestBox) { box in
+        .onGeometryChange(for: Bool.self) { proxy in
+            StatusColumnLayout(safeArea: proxy.safeAreaInsets) != nil
+        } action: { besideColumn in
+            isBesideStatusColumn = besideColumn
+        }
+        .sheet(item: $controlRequestBox, onDismiss: { router.refitItemDetail() }) { box in
             SiloControlTargetPickerView(request: box.request, controller: siloControl)
         }
-        .sheet(isPresented: $isShowingControlPicker) {
+        .sheet(isPresented: $isShowingControlPicker, onDismiss: { router.refitItemDetail() }) {
             SiloControlTargetPickerView(request: nil, controller: siloControl)
         }
-        .sheet(isPresented: $isShowingRemoteControl) {
-            SiloControlRemoteView(controller: siloControl)
-                .presentationDetents([.large])
+        .siloRemoteControl(
+            isPresented: $isShowingRemoteControl,
+            coversWindow: router.presentsItemDetailFullWindow || isBesideStatusColumn,
+            controller: siloControl,
+            onDismiss: { router.refitItemDetail() }
+        )
+        // Refitting the detail would discard these, so it waits for them.
+        .onChange(of: isShowingControl) { _, showing in
+            router.itemDetailShowsControl = showing
+        }
+        .onChange(of: seriesSelection) { _, selection in
+            if let selection { onSeriesSelection?(selection) }
         }
         #endif
     }
