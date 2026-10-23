@@ -339,6 +339,7 @@ private struct ItemDetailPhoneContent: View {
     }
 
     @State private var viewModel: ItemDetailViewModel
+    @State private var missingSeasonRequests = MissingSeasonRequests()
     @State private var preferredVersionFileId: Int?
     @State private var preferredAudioTrackIndex: Int?
     @State private var preferredSubtitleTrackIndex: Int?
@@ -452,6 +453,7 @@ private struct ItemDetailPhoneContent: View {
                 viewModel.initialResumeSeasonNumber = viewModel.selectedSeason?.seasonNumber
                     ?? viewModel.initialResumeSeasonNumber
             }
+            viewModel.missingEpisodes = await MissingEpisodesPreferenceStore.shared.scope()
             await viewModel.loadDetail(contentId: contentId)
             reseedSubtitleOverride()
         }
@@ -812,11 +814,18 @@ private struct ItemDetailPhoneContent: View {
                 trailerStatusMessage: viewModel.trailerFetch.statusMessage,
                 isFindingTrailers: viewModel.trailerFetch.isFetching,
                 onTrailerStatusShown: { viewModel.trailerFetch.acknowledge() },
+                requestedSeasons: missingSeasonRequests.requestedSeasons,
+                onRequestSeason: missingSeasonRequests.canRequest
+                    ? { await missingSeasonRequests.request(season: $0) }
+                    : nil,
                 scrollState: detailScrollState,
                 belowOverview: { translationView(for: detail) }
             )
             .task(id: playbackEpisode(for: detail)?.contentId) {
                 await loadNextUpWatchDetail(for: detail)
+            }
+            .task(id: MissingSeasonRequestsKey(tmdbId: detail.tmdbId, missing: viewModel.missingEpisodes)) {
+                await missingSeasonRequests.load(tmdbId: detail.tmdbId, missing: viewModel.missingEpisodes)
             }
         } else {
             MovieDetailContent(
@@ -1152,7 +1161,8 @@ private struct ItemDetailPhoneContent: View {
     }
 
     private func loadNextUpWatchDetail(for detail: ItemDetail) async {
-        guard let nextUp = playbackEpisode(for: detail) else {
+        // An episode the library lacks has no playback detail to read.
+        guard let nextUp = playbackEpisode(for: detail), nextUp.availability == nil else {
             nextUpWatchDetail = nil
             isLoadingNextUpWatchDetail = false
             preferredNextUpFileId = nil
@@ -1357,5 +1367,10 @@ private struct ItemDetailPhoneContent: View {
             ? "Play Downloaded"
             : "Play Downloaded (\(parts.joined(separator: " · ")))"
     }
+}
+
+private struct MissingSeasonRequestsKey: Equatable {
+    let tmdbId: String?
+    let missing: MissingEpisodes
 }
 #endif

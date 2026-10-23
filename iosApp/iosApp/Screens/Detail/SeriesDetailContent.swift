@@ -60,6 +60,11 @@ struct SeriesDetailContent<BelowOverview: View>: View {
     let isFindingTrailers: Bool
     /// Called once a terminal status message has been on screen long enough.
     let onTrailerStatusShown: () -> Void
+    /// Seasons a request or a download server already covers.
+    var requestedSeasons: Set<Int> = []
+    /// Requests one missing season and reports whether the server took it;
+    /// nil while no download server takes series requests.
+    var onRequestSeason: ((Int) async -> Bool)? = nil
     /// Reference-backed scroll state observed only by the small parallax and
     /// pinned-chrome views, keeping the native ScrollView's body stable.
     let scrollState: PhoneDetailScrollState
@@ -91,6 +96,9 @@ struct SeriesDetailContent<BelowOverview: View>: View {
     /// Keep the primary control interactive from frame one and fulfill that
     /// intent as soon as the target episode is known.
     @State private var pendingEpisodePlayRequest: PendingEpisodePlayRequest?
+    @State private var seasonRequestPrompt: Int?
+    @State private var isRequestingSeason = false
+    @State private var seasonRequestFailed = false
 
     var body: some View {
         PhoneDetailPageSurface(
@@ -170,6 +178,24 @@ struct SeriesDetailContent<BelowOverview: View>: View {
         }
         .personalStateNoticeAlert($watchedNotice)
         .shuffleFailureAlert(shuffleLauncher)
+        .alert(
+            seasonRequestPrompt.map { "Request Season \($0)?" } ?? "",
+            isPresented: Binding(
+                get: { seasonRequestPrompt != nil },
+                set: { if !$0 { seasonRequestPrompt = nil } }
+            ),
+            presenting: seasonRequestPrompt
+        ) { season in
+            Button("Request") { submitSeasonRequest(season) }
+            Button("Cancel", role: .cancel) {}
+        } message: { _ in
+            Text("Silo asks your download server for the season's episodes.")
+        }
+        .alert("Couldn't Request the Season", isPresented: $seasonRequestFailed) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text("Please check your connection and try again.")
+        }
     }
 
     private var heroToContentSpacing: CGFloat {
@@ -209,23 +235,43 @@ struct SeriesDetailContent<BelowOverview: View>: View {
     private var heroExtras: some View {
         VStack(spacing: 14) {
             belowOverview()
-            playbackSelectorSlot
-                .opacity(isLoadingEpisodes || nextUpEpisode != nil ? 1 : 0)
-                .accessibilityHidden(!isLoadingEpisodes && nextUpEpisode == nil)
+            if let missingEpisode {
+                // An episode the library lacks has no version, audio or
+                // subtitles to pick.
+                Text(availabilityNote(for: missingEpisode))
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(Color.siloSecondaryText)
+                    .frame(maxWidth: .infinity)
+                    .frame(minHeight: PhonePlaybackSelectorSkeleton.standardHeight)
+            } else {
+                playbackSelectorSlot
+                    .opacity(isLoadingEpisodes || nextUpEpisode != nil ? 1 : 0)
+                    .accessibilityHidden(!isLoadingEpisodes && nextUpEpisode == nil)
+            }
         }
     }
 
     @ViewBuilder
     private var actionStack: some View {
         VStack(spacing: 14) {
-            PhonePrimaryPillButton(
-                icon: "play.fill",
-                title: nextUpEpisode.map(playButtonLabel)
-                    ?? (isLoadingEpisodes ? "Loading episodes…" : "Play"),
-                action: handlePrimaryPlayTap,
-                fullWidth: true
-            )
-            .disabled(nextUpEpisode == nil && !isLoadingEpisodes)
+            if let missingEpisode {
+                PhonePrimaryPillButton(
+                    icon: "",
+                    title: seasonRequestLabel(for: missingEpisode.seasonNumber),
+                    action: { promptSeasonRequest(missingEpisode.seasonNumber) },
+                    fullWidth: true
+                )
+                .disabled(!canRequestSeason(missingEpisode.seasonNumber))
+            } else {
+                PhonePrimaryPillButton(
+                    icon: "play.fill",
+                    title: nextUpEpisode.map(playButtonLabel)
+                        ?? (isLoadingEpisodes ? "Loading episodes…" : "Play"),
+                    action: handlePrimaryPlayTap,
+                    fullWidth: true
+                )
+                .disabled(nextUpEpisode == nil && !isLoadingEpisodes)
+            }
 
             PhoneLabeledActionRow {
                 PhoneLabeledAction(
@@ -255,13 +301,15 @@ struct SeriesDetailContent<BelowOverview: View>: View {
                         ? "Mark Episode Unwatched" : "Mark Episode Watched",
                     action: toggleNextUpEpisodeWatched
                 )
-                .disabled(isUpdatingWatched || nextUpEpisode == nil)
+                .disabled(isUpdatingWatched || nextUpEpisode == nil || missingEpisode != nil)
                 if DownloadManager.shared.downloadsEnabled {
+                    // Downloads read the library alone: no season it holds
+                    // none of, and no episode it lacks.
                     SeriesDownloadButton(
                         detail: detail,
-                        seasons: seasons,
-                        selectedSeason: selectedSeason,
-                        episode: nextUpEpisode,
+                        seasons: seasons.filter { !$0.isMissing },
+                        selectedSeason: selectedSeason.flatMap { $0.isMissing ? nil : $0 },
+                        episode: missingEpisode == nil ? nextUpEpisode : nil,
                         // The version the page shows, including an automatic pick.
                         episodeFileId: nextUpEpisode.flatMap(playbackFileId(for:)) ?? effectiveNextUpVersion?.fileId
                     )
@@ -274,7 +322,7 @@ struct SeriesDetailContent<BelowOverview: View>: View {
             AutoDownloadBanner(
                 seriesId: detail.seriesId ?? detail.contentId,
                 seriesTitle: detail.title,
-                seasons: seasons
+                seasons: seasons.filter { !$0.isMissing }
             )
 
             if let trailerStatusMessage {
@@ -347,7 +395,7 @@ struct SeriesDetailContent<BelowOverview: View>: View {
             Divider()
         }
         #if os(iOS)
-        if let episode = nextUpEpisode {
+        if let episode = nextUpEpisode, episode.availability == nil {
             WatchPartyMenuButton(contentId: episode.contentId, title: episode.title ?? "Episode", type: "episode",
                 fileId: playbackFileId(for: episode), episode: episode)
         }
@@ -393,6 +441,8 @@ struct SeriesDetailContent<BelowOverview: View>: View {
     }
 
     private func handlePlayTap(for episode: EpisodeListItem) {
+        // An episode the library lacks has nothing to play.
+        guard episode.availability == nil else { return }
         resumeLookupTask?.cancel()
         resumeLookupTask = Task {
             let state = await refreshResumeState(episode.contentId)
@@ -415,6 +465,47 @@ struct SeriesDetailContent<BelowOverview: View>: View {
         }
         pendingEpisodePlayRequest = nil
         handlePlayTap(for: nextUpEpisode)
+    }
+
+    // MARK: - Missing seasons
+
+    /// The episode the page is on, when the library lacks it: the hero then
+    /// requests its season instead of playing.
+    private var missingEpisode: EpisodeListItem? {
+        nextUpEpisode.flatMap { $0.availability == nil ? nil : $0 }
+    }
+
+    private func canRequestSeason(_ season: Int) -> Bool {
+        onRequestSeason != nil && !requestedSeasons.contains(season) && !isRequestingSeason
+    }
+
+    private func seasonRequestLabel(for season: Int) -> String {
+        if requestedSeasons.contains(season) { return "Season \(season) Requested" }
+        if isRequestingSeason { return "Requesting…" }
+        return onRequestSeason == nil ? "Not in Library" : "Request Season \(season)"
+    }
+
+    private func availabilityNote(for episode: EpisodeListItem) -> String {
+        let state = episode.availability == .unaired ? "Not aired yet" : "Not in your library"
+        return requestedSeasons.contains(episode.seasonNumber)
+            ? "\(state) · Season \(episode.seasonNumber) requested"
+            : state
+    }
+
+    private func promptSeasonRequest(_ season: Int) {
+        guard canRequestSeason(season) else { return }
+        seasonRequestPrompt = season
+    }
+
+    private func submitSeasonRequest(_ season: Int) {
+        guard let onRequestSeason, !isRequestingSeason else { return }
+        isRequestingSeason = true
+        Task {
+            defer { isRequestingSeason = false }
+            if !(await onRequestSeason(season)) {
+                seasonRequestFailed = true
+            }
+        }
     }
 
     private func handleSeasonSelection(_ season: Season) {
@@ -647,7 +738,8 @@ struct SeriesDetailContent<BelowOverview: View>: View {
                             favoriteStates: episodeFavoriteStates,
                             watchlistStates: episodeWatchlistStates,
                             onSetFavorite: onSetEpisodeFavorite,
-                            onSetWatchlist: onSetEpisodeWatchlist
+                            onSetWatchlist: onSetEpisodeWatchlist,
+                            requestedSeasons: requestedSeasons
                         )
                     }
                 }

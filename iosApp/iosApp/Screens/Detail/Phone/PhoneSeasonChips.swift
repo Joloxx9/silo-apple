@@ -115,6 +115,7 @@ struct PhoneSeasonChips: View {
                     }
                 }
                 .frame(width: size.width, height: size.height)
+                .grayscale(season.isMissing ? 1 : 0)
                 .clipShape(shape)
                 .overlay {
                     shape.strokeBorder(
@@ -137,7 +138,7 @@ struct PhoneSeasonChips: View {
                     .font(.siloCardTitle)
                     .foregroundStyle(Color.siloOnSurface)
                     .lineLimit(1)
-                Text(season.episodeCount == 1 ? "1 episode" : "\(season.episodeCount) episodes")
+                Text(episodeCountText(for: season))
                     .font(.siloCardMetadata)
                     .foregroundStyle(Color.siloSecondaryText)
                     .lineLimit(1)
@@ -168,7 +169,7 @@ struct PhoneSeasonChips: View {
         }
         .accessibilityAddTraits(isSelected ? .isSelected : [])
         .contextMenu { watchedMenu(for: season) }
-        .foregroundStyle(isSelected ? Color.black : Color.white)
+        .foregroundStyle(isSelected ? Color.black : Color.white.opacity(season.isMissing ? 0.45 : 1))
         .background(
             Group {
                 if isSelected {
@@ -185,6 +186,16 @@ struct PhoneSeasonChips: View {
         )
         .buttonStyle(.plain)
     }
+
+    #if os(macOS)
+    /// A season the library holds none of counts what it lacks instead.
+    private func episodeCountText(for season: Season) -> String {
+        if season.isMissing {
+            return "\(season.missingEpisodeCount) missing"
+        }
+        return season.episodeCount == 1 ? "1 episode" : "\(season.episodeCount) episodes"
+    }
+    #endif
 
     private func label(for season: Season) -> String {
         if let title = season.title, !title.isEmpty { return title }
