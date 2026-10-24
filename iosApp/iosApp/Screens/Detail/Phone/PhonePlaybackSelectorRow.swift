@@ -138,6 +138,14 @@ struct PhonePlaybackSelectorRow: View {
     let selectedVersionFileId: Int?
     let selectedAudioTrackIndex: Int?
     let selectedSubtitleTrackIndex: Int?
+    /// The title's effective subtitle settings, for previewing what "Auto"
+    /// plays. Off after the viewer picks Auto on the page: the title then
+    /// inherits settings the page hasn't read yet, so the row says "Auto".
+    var previewsAutoSubtitle = false
+    var subtitleLanguage: String? = nil
+    var subtitleMode: String? = nil
+    var subtitleSignature: SubtitleTrackSignature? = nil
+    var showForcedSubtitles = true
     let onSelectVersion: (Int?) -> Void
     let onSelectAudioTrack: (Int?) -> Void
     let onSelectSubtitleTrack: (Int?) -> Void
@@ -181,6 +189,22 @@ struct PhonePlaybackSelectorRow: View {
                 }
             #endif
         }
+    }
+
+    /// The "Auto" preview, or nil for a bare "Auto". Also nil when the
+    /// player follows the device's caption settings, which the detail page
+    /// can't predict.
+    private var subtitleAutoContext: DetailPlaybackFormatting.SubtitleAutoContext? {
+        guard previewsAutoSubtitle,
+              !PlayerSettings.shared.subtitleMatchesSystemAppearance else { return nil }
+        return DetailPlaybackFormatting.SubtitleAutoContext(
+            version: currentVersion,
+            selectedAudioTrackIndex: selectedAudioTrackIndex,
+            preferredLanguage: subtitleLanguage,
+            mode: subtitleMode,
+            signature: subtitleSignature,
+            showForced: showForcedSubtitles
+        )
     }
 
     private func selectorPresentation(
@@ -403,7 +427,8 @@ struct PhonePlaybackSelectorRow: View {
         case .subtitles:
             return DetailPlaybackFormatting.subtitleValueLabel(
                 version: currentVersion,
-                selectedSubtitleTrackIndex: selectedSubtitleTrackIndex
+                selectedSubtitleTrackIndex: selectedSubtitleTrackIndex,
+                autoContext: subtitleAutoContext
             )
         }
     }

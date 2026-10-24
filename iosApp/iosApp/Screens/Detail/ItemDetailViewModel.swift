@@ -674,6 +674,8 @@ class ItemDetailViewModel {
                 subtitles: watchDetail.subtitles,
                 intro: watchDetail.intro,
                 credits: watchDetail.credits,
+                effectiveSubtitleLanguage: watchDetail.effectiveSubtitleLanguage,
+                hasWatchDetailSubtitlePolicy: true,
                 effectiveSubtitleMode: watchDetail.effectiveSubtitleMode,
                 effectiveShowForcedSubtitles: watchDetail.effectiveShowForcedSubtitles,
                 effectiveSubtitleTrackSignature: watchDetail.effectiveSubtitleTrackSignature,
