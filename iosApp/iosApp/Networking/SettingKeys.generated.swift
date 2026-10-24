@@ -35,6 +35,8 @@ public enum SettingKey: String, CaseIterable, Sendable {
     case catalogMetadataLanguageOverrides = "catalog.metadata_language_overrides"
     /// Show advisory age
     case catalogShowAdvisoryAge = "catalog.show_advisory_age"
+    /// Show missing episodes
+    case catalogShowMissingEpisodes = "catalog.show_missing_episodes"
     /// Download quality
     case downloadsDefaultQuality = "downloads.default_quality"
     /// Keep watched downloads
@@ -174,7 +176,7 @@ public enum SettingKey: String, CaseIterable, Sendable {
 }
 
 public extension SettingKey {
-    static let revision = 23
+    static let revision = 24
 
     /// Keys the server stores. The rest never leave the device.
     static let remote: [SettingKey] = [
@@ -183,6 +185,7 @@ public extension SettingKey {
         .catalogMetadataLanguage,
         .catalogMetadataLanguageOverrides,
         .catalogShowAdvisoryAge,
+        .catalogShowMissingEpisodes,
         .homeHideWatchedItems,
         .navPrimaryMenu,
         .navShortcuts,

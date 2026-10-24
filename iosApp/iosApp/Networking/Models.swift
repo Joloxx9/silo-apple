@@ -748,7 +748,14 @@ struct Season: Codable, Identifiable, Hashable {
     let userData: SeasonUserData?
     /// Localized fields ("overview") machine-translated by AI.
     var machineTranslatedFields: [String]? = nil
+    /// Episodes of the season no library holds, sent only to a list that
+    /// asked for missing episodes.
+    var missingEpisodeCount: Int = 0
     var id: String { contentId }
+
+    /// True for a season the library holds none of, listed only because the
+    /// viewer asked to see what is missing.
+    var isMissing: Bool { episodeCount == 0 && missingEpisodeCount > 0 }
 
     /// Consistent label for season pickers and episode-section headings.
     var downloadDisplayName: String {
@@ -771,6 +778,7 @@ struct Season: Codable, Identifiable, Hashable {
         posterThumbhash = try c.decodeIfPresent(String.self, forKey: .posterThumbhash)
         userData = try c.decodeIfPresent(SeasonUserData.self, forKey: .userData)
         machineTranslatedFields = try c.decodeIfPresent([String].self, forKey: .machineTranslatedFields)
+        missingEpisodeCount = try c.decodeIfPresent(Int.self, forKey: .missingEpisodeCount) ?? 0
     }
 }
 
@@ -799,6 +807,11 @@ extension Array where Element == Season {
     /// season (Specials only once every numbered season is played), then the
     /// first season.
     func preferredResumeSeason() -> Season? {
+        // A season the library holds none of is never where a viewer resumes.
+        let held = filter { !$0.isMissing }
+        if held.count != count, let season = held.preferredResumeSeason() {
+            return season
+        }
         if let inProgress = first(where: { ($0.userData?.inProgressCount ?? 0) > 0 }) {
             return inProgress
         }
@@ -826,7 +839,12 @@ extension Array where Element == EpisodeListItem {
     /// The episode a viewer resumes with: the one in progress, then the first
     /// unwatched, then the first.
     func preferredResumeEpisode() -> EpisodeListItem? {
-        first { $0.userData?.isInProgress == true }
+        // An episode the library lacks cannot be played.
+        let held = filter { $0.availability == nil }
+        if held.count != count {
+            return held.preferredResumeEpisode() ?? first
+        }
+        return first { $0.userData?.isInProgress == true }
             ?? first { !($0.userData?.played ?? false) }
             ?? first
     }
@@ -868,7 +886,18 @@ struct EpisodeListItem: Codable, Identifiable, Hashable {
     /// This profile's metadata language when the episode's description is
     /// not in it yet. The season's translation job covers it.
     var pendingTranslationLanguage: String? = nil
+    /// `missing` or `unaired` for an episode no library holds, listed only
+    /// because the viewer asked to see what is missing; nil for one it holds.
+    var availability: EpisodeAvailability? = nil
     var id: String { contentId }
+}
+
+/// Why an episode on a list that includes missing ones cannot be played.
+enum EpisodeAvailability: String, Codable, Hashable {
+    /// Aired, but no library holds it.
+    case missing
+    /// Not aired yet.
+    case unaired
 }
 
 struct EpisodeFile: Codable, Hashable {

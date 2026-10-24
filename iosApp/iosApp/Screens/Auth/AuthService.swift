@@ -761,6 +761,7 @@ final class AuthService: @unchecked Sendable {
         // so the next profile must re-read them.
         OverlayPrefsStore.shared.clear()
         AdvisoryAgePreferenceStore.shared.clear()
+        MissingEpisodesPreferenceStore.shared.clear()
         // Profile's preferred subtitle language drives detail-page track
         // ordering; drop it so the next profile re-hydrates its own.
         ProfilePrefsStore.shared.clear()

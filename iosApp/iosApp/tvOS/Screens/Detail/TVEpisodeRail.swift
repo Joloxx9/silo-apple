@@ -23,6 +23,10 @@ struct TVEpisodeRail: View {
     var onSetWatched: ((_ contentId: String, _ played: Bool) async -> PersonalStateOutcome)? = nil
     var onSetFavorite: ((_ contentId: String, _ isFavorite: Bool) async -> PersonalStateOutcome)? = nil
     var onSetWatchlist: ((_ contentId: String, _ inWatchlist: Bool) async -> PersonalStateOutcome)? = nil
+    /// Seasons a request or a download server already covers; their missing
+    /// episodes read Requested. Requests cover whole seasons, so the action
+    /// lives on the season, not here.
+    var requestedSeasons: Set<Int> = []
     /// When non-nil, the matching card is visually highlighted and anchored
     /// at first appearance.
     var currentContentId: String? = nil
@@ -215,7 +219,8 @@ struct TVEpisodeRail: View {
             onSetWatchlist: onSetWatchlist,
             initialInWatchlist: watchlistStates[episode.contentId] ?? false,
             cardHeightRatio: cardHeightRatio,
-            usesAnchoredStyle: anchorsFocusedCard
+            usesAnchoredStyle: anchorsFocusedCard,
+            isRequested: requestedSeasons.contains(episode.seasonNumber)
         )
     }
 
@@ -551,6 +556,8 @@ struct TVEpisodeCard: View {
     /// The Series carousel's look: compact caption, Home's artwork-only
     /// lift, and no focus or current outline.
     var usesAnchoredStyle = false
+    /// For an episode the library lacks: its season is already requested.
+    var isRequested = false
 
     @State private var actionFeedback = MediaActionFeedback()
     @State private var playedOverride: Bool?
@@ -573,7 +580,8 @@ struct TVEpisodeCard: View {
                 cardWidth: cardWidth,
                 stillHeight: stillHeight,
                 stillCornerRadius: stillCornerRadius,
-                usesAnchoredStyle: usesAnchoredStyle
+                usesAnchoredStyle: usesAnchoredStyle,
+                isRequested: isRequested
             )
         }
         .applyEpisodeButtonStyle(anchored: usesAnchoredStyle)
@@ -581,7 +589,10 @@ struct TVEpisodeCard: View {
         .accessibilityLabel(accessibilityDescription)
 
         Group {
-            if onPlay != nil || onSetWatched != nil || onSetFavorite != nil || onSetWatchlist != nil {
+            if episode.availability != nil {
+                // Nothing to play or mark on an episode the library lacks.
+                button
+            } else if onPlay != nil || onSetWatched != nil || onSetFavorite != nil || onSetWatchlist != nil {
                 button.contextMenu { contextActions }
             } else {
                 button
@@ -700,6 +711,7 @@ private struct EpisodeCardLabel: View {
     /// The Series carousel's look: compact caption, Home's artwork-only lift,
     /// and no focus or current outline.
     let usesAnchoredStyle: Bool
+    var isRequested = false
 
     @Environment(\.isFocused) private var isFocused
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -771,6 +783,20 @@ private struct EpisodeCardLabel: View {
             )
             .frame(width: cardWidth, height: stillHeight)
             .episodeSpoilerBlur(hidesStill)
+            .grayscale(episode.availability == nil ? 0 : 1)
+            .opacity(episode.availability == nil ? 1 : 0.55)
+
+            if let availability = episode.availability {
+                VStack {
+                    HStack {
+                        missingBadge(availability)
+                            .padding(12)
+                        Spacer()
+                    }
+                    Spacer()
+                }
+                .frame(width: cardWidth, height: stillHeight)
+            }
 
             if isPlayed {
                 Color.black.opacity(0.35)
@@ -813,6 +839,28 @@ private struct EpisodeCardLabel: View {
             reduceMotion: reduceMotion,
             cornerRadius: stillCornerRadius
         )
+    }
+
+    /// Why the episode cannot be played, or that it is already on its way.
+    private func missingBadge(_ availability: EpisodeAvailability) -> some View {
+        let text: String
+        let symbol: String
+        if isRequested {
+            text = "Requested"
+            symbol = "checkmark"
+        } else if availability == .unaired {
+            text = "Not aired yet"
+            symbol = "clock"
+        } else {
+            text = "Missing"
+            symbol = "arrow.down.circle"
+        }
+        return Label(text, systemImage: symbol)
+            .font(.system(size: 17, weight: .semibold))
+            .foregroundStyle(Color.white)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+            .background(Capsule().fill(Color.black.opacity(0.7)))
     }
 
     private var watchedBadge: some View {

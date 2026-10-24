@@ -108,6 +108,14 @@ struct RequestsFeatureStatus: Decodable {
     /// viewer can ask to hear when someone else's request lands. Absent on
     /// older servers, which reads as unsupported.
     var followSupported: Bool? = nil
+    /// An enabled download server takes series requests, so a missing
+    /// season has somewhere to go. Absent on servers without missing
+    /// seasons, which reads as none.
+    var seriesServerConnected: Bool? = nil
+    /// A series already in the library can be requested for the seasons it
+    /// lacks: every download server the series go to fetches single
+    /// seasons. Absent on older servers, which reads as not requestable.
+    var missingSeasonsRequestable: Bool? = nil
 
     /// The feature is on and this profile may use it. A blocked account sees
     /// `requests_enabled: true` with `allowed: false`.
@@ -214,6 +222,19 @@ struct RequestMediaDetail: Codable {
     let libraryContentId: String?
     /// Mutable so a follow toggle can patch the viewer's state in place.
     var request: RequestState
+    /// Series: the regular seasons with library availability and request
+    /// coverage. Absent on older servers and for movies.
+    var seasons: [RequestMediaSeason]? = nil
+}
+
+/// One regular season of a series on its request detail.
+struct RequestMediaSeason: Codable, Hashable {
+    let seasonNumber: Int
+    /// `missing`, `partial` or `available`.
+    let availability: String
+    /// A request already covers the season, or a download server already
+    /// has it on its way.
+    let requested: Bool
 }
 
 // MARK: - Request records
@@ -268,6 +289,9 @@ struct CreateRequestInput: Encodable {
     let overview: String?
     let posterPath: String?
     let backdropPath: String?
+    /// Series only: the season numbers to request. Nil asks for every aired
+    /// season not yet complete in the library.
+    var seasons: [Int]? = nil
 }
 
 struct CancelRequestBody: Encodable {

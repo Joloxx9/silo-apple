@@ -61,6 +61,8 @@ extension SettingKey {
             return Self.cellularQualityRevision
         case .playbackBufferingQualityMode:
             return 23
+        case .catalogShowMissingEpisodes:
+            return 24
         case .catalogMetadataLanguage, .downloadsDefaultQuality, .downloadsKeepWatched,
              .downloadsWifiOnly, .navShowAudiobooks, .playbackAudioLanguage,
              .playbackAutoPlayNext, .playbackAutoPlayNextPreview, .playbackAutoSkipCredits,

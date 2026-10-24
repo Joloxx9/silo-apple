@@ -16,6 +16,9 @@ struct PhoneEpisodeCarousel: View {
     var watchlistStates: [String: Bool] = [:]
     var onSetFavorite: ((String, Bool) async -> PersonalStateOutcome)? = nil
     var onSetWatchlist: ((String, Bool) async -> PersonalStateOutcome)? = nil
+    /// Seasons a request or a download server already covers; their missing
+    /// episodes read Requested.
+    var requestedSeasons: Set<Int> = []
 
     /// The last real page height is retained while a new season is loading.
     /// Without this, replacing the carousel with a small spinner collapses the
@@ -46,7 +49,8 @@ struct PhoneEpisodeCarousel: View {
                     favoriteStates: favoriteStates,
                     watchlistStates: watchlistStates,
                     onSetFavorite: onSetFavorite,
-                    onSetWatchlist: onSetWatchlist
+                    onSetWatchlist: onSetWatchlist,
+                    requestedSeasons: requestedSeasons
                 )
             }
         }

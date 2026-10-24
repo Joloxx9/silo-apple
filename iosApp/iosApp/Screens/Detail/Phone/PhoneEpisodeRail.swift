@@ -16,6 +16,10 @@ struct PhoneEpisodeRail: View {
     var watchlistStates: [String: Bool] = [:]
     var onSetFavorite: ((String, Bool) async -> PersonalStateOutcome)? = nil
     var onSetWatchlist: ((String, Bool) async -> PersonalStateOutcome)? = nil
+    /// Seasons a request or a download server already covers; their missing
+    /// episodes read Requested. Requests cover whole seasons, so the action
+    /// lives on the season, not on a card.
+    var requestedSeasons: Set<Int> = []
 
     private var uiCustomization: UICustomizationPreferences { .shared }
     @State private var visibleEpisodeId: String?
@@ -41,7 +45,8 @@ struct PhoneEpisodeRail: View {
                         stillCornerRadius: stillCornerRadius,
                         captionStyle: captionStyleOverride ?? uiCustomization.cardPresentation.caption,
                         onSelect: { onSelect(episode.contentId) },
-                        onPlay: onPlay.map { play in
+                        // Nothing to play on an episode the library lacks.
+                        onPlay: episode.availability != nil ? nil : onPlay.map { play in
                             { play(episode.contentId) }
                         },
                         onSetWatched: onSetWatched,
@@ -49,7 +54,8 @@ struct PhoneEpisodeRail: View {
                         isFavorite: favoriteStates[episode.contentId] ?? false,
                         inWatchlist: watchlistStates[episode.contentId] ?? false,
                         onSetFavorite: onSetFavorite,
-                        onSetWatchlist: onSetWatchlist
+                        onSetWatchlist: onSetWatchlist,
+                        isRequested: requestedSeasons.contains(episode.seasonNumber)
                     )
                     .id(episode.contentId)
                 }
@@ -158,6 +164,8 @@ private struct PhoneEpisodeCard: View {
     let inWatchlist: Bool
     let onSetFavorite: ((String, Bool) async -> PersonalStateOutcome)?
     let onSetWatchlist: ((String, Bool) async -> PersonalStateOutcome)?
+    /// For an episode the library lacks: its season is already requested.
+    var isRequested = false
 
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @State private var actionFeedback = MediaActionFeedback()
@@ -206,26 +214,29 @@ private struct PhoneEpisodeCard: View {
         .contentShape(.contextMenuPreview, RoundedRectangle(cornerRadius: stillCornerRadius))
         #endif
         .contextMenu {
-            #if os(iOS)
-            WatchPartyMenuButton(contentId: episode.contentId, title: episode.title ?? "Episode", type: "episode",
-                episode: episode)
-            #endif
-            MediaStateMenuItems(
-                isWatched: episode.userData?.played == true,
-                isFavorite: isFavorite,
-                inWatchlist: inWatchlist,
-                watchedSubject: "Episode",
-                isUpdating: isUpdatingWatched || actionFeedback.isUpdating,
-                onToggleWatched: onSetWatched.map { update in
-                    { update(episode, !(episode.userData?.played ?? false)) }
-                },
-                onToggleFavorite: onSetFavorite.map { update in
-                    { actionFeedback.perform { await update(episode.contentId, !isFavorite) } }
-                },
-                onToggleWatchlist: onSetWatchlist.map { update in
-                    { actionFeedback.perform { await update(episode.contentId, !inWatchlist) } }
-                }
-            )
+            // Nothing to play or mark on an episode the library lacks.
+            if episode.availability == nil {
+                #if os(iOS)
+                WatchPartyMenuButton(contentId: episode.contentId, title: episode.title ?? "Episode", type: "episode",
+                    episode: episode)
+                #endif
+                MediaStateMenuItems(
+                    isWatched: episode.userData?.played == true,
+                    isFavorite: isFavorite,
+                    inWatchlist: inWatchlist,
+                    watchedSubject: "Episode",
+                    isUpdating: isUpdatingWatched || actionFeedback.isUpdating,
+                    onToggleWatched: onSetWatched.map { update in
+                        { update(episode, !(episode.userData?.played ?? false)) }
+                    },
+                    onToggleFavorite: onSetFavorite.map { update in
+                        { actionFeedback.perform { await update(episode.contentId, !isFavorite) } }
+                    },
+                    onToggleWatchlist: onSetWatchlist.map { update in
+                        { actionFeedback.perform { await update(episode.contentId, !inWatchlist) } }
+                    }
+                )
+            }
         }
     }
 
@@ -325,6 +336,8 @@ private struct PhoneEpisodeCard: View {
             .frame(width: cardWidth, height: stillHeight)
             .episodeSpoilerBlur(spoilers.hidesImage(for: watchState, isEpisodeStill: episode.stillIsEpisodeStill))
             .clipped()
+            .grayscale(episode.availability == nil ? 0 : 1)
+            .opacity(episode.availability == nil ? 1 : 0.55)
 
             if episode.userData?.played == true {
                 Color.black.opacity(0.32)
@@ -339,6 +352,11 @@ private struct PhoneEpisodeCard: View {
             }
         }
         .frame(width: cardWidth, height: stillHeight)
+        .overlay(alignment: .topLeading) {
+            if let availability = episode.availability {
+                missingBadge(availability).padding(8)
+            }
+        }
         .clipShape(RoundedRectangle(cornerRadius: stillCornerRadius))
         .overlay(
             RoundedRectangle(cornerRadius: stillCornerRadius)
@@ -353,6 +371,28 @@ private struct PhoneEpisodeCard: View {
 
     private var borderWidth: CGFloat {
         isCurrent ? 2 : 0
+    }
+
+    /// Why the episode cannot be played, or that it is already on its way.
+    private func missingBadge(_ availability: EpisodeAvailability) -> some View {
+        let text: String
+        let symbol: String
+        if isRequested {
+            text = "Requested"
+            symbol = "checkmark"
+        } else if availability == .unaired {
+            text = "Not aired yet"
+            symbol = "clock"
+        } else {
+            text = "Missing"
+            symbol = "arrow.down.circle"
+        }
+        return Label(text, systemImage: symbol)
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(Color.white)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(Capsule().fill(Color.black.opacity(0.7)))
     }
 
     private var watchedBadge: some View {

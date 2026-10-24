@@ -21,8 +21,12 @@ struct PhonePrimaryPillButton: View {
     var body: some View {
         Button(action: action) {
             HStack(spacing: 10) {
-                Image(systemName: icon)
-                    .font(.body.bold())
+                // An empty icon leaves the title alone, for an action that is
+                // not playback.
+                if !icon.isEmpty {
+                    Image(systemName: icon)
+                        .font(.body.bold())
+                }
                 Text(title)
                     .font(.body.weight(.semibold))
                     .lineLimit(1)
