@@ -29,12 +29,13 @@ final class MissingSeasonRequests {
             reset()
             return
         }
-        let status = try? await api.requestsStatus()
-        guard currentGeneration == generation else { return }
+        // A failed read keeps what the page showed; the next load asks again.
+        guard let status = try? await api.requestsStatus(),
+              currentGeneration == generation else { return }
         // A download server that cannot fetch single seasons would add the
         // whole series again, so the server says whether to offer them.
-        guard status?.isAvailable == true, status?.seriesServerConnected == true,
-              status?.missingSeasonsRequestable == true else {
+        guard status.isAvailable == true, status.seriesServerConnected == true,
+              status.missingSeasonsRequestable == true else {
             reset()
             return
         }
@@ -66,6 +67,13 @@ final class MissingSeasonRequests {
             requestedSeasons.insert(season)
             return true
         } catch {
+            // The server may have taken a request whose answer was lost, so
+            // read the season back before offering Request again.
+            if let fresh = try? await api.requestsDetail(mediaType: .series, tmdbId: media.tmdbId),
+               (fresh.seasons ?? []).contains(where: { $0.seasonNumber == season && $0.requested }) {
+                requestedSeasons.insert(season)
+                return true
+            }
             return false
         }
     }

@@ -149,7 +149,9 @@ extension EpisodeListItem {
         self.stillUrl = value.stillUrl
         self.machineTranslatedFields = value.machineTranslatedFields
         self.pendingTranslationLanguage = value.pendingTranslationLanguage
-        self.availability = value.availability.flatMap(EpisodeAvailability.init(rawValue:))
+        // Any availability is an episode the library lacks; one this build
+        // does not know reads as missing, never as playable.
+        self.availability = value.availability.map { EpisodeAvailability(rawValue: $0) ?? .missing }
     }
 }
 

@@ -20,7 +20,17 @@ class ItemDetailViewModel {
     /// What the library lacks that the series page lists too. Only the series
     /// page sets it; every other reader of seasons and episodes stays on the
     /// library alone.
-    var missingEpisodes: MissingEpisodes = .none
+    ///
+    /// Pages already loaded, and loads in flight, belong to the scope they
+    /// were read for, so a change drops them and the next load reads again.
+    var missingEpisodes: MissingEpisodes = .none {
+        didSet {
+            guard missingEpisodes != oldValue else { return }
+            seasonsLoadGeneration += 1
+            episodeLoadGeneration += 1
+            episodesBySeason = [:]
+        }
+    }
 
     // Catalog metadata and the hierarchy finish independently. An empty array
     // is only an empty result after its request has succeeded.
@@ -934,15 +944,16 @@ class ItemDetailViewModel {
         }
         do {
             let response: SeasonsResponse
+            let missing = missingEpisodes
             if let fetchSeasons {
                 response = try await fetchSeasons(seriesId)
             } else if coalescesMetadataRequest {
-                response = try await MetadataRequestPool.shared.seasons(seriesId: seriesId, libraryId: libraryId, missing: missingEpisodes)
+                response = try await MetadataRequestPool.shared.seasons(seriesId: seriesId, libraryId: libraryId, missing: missing)
             } else {
-                response = try await SiloAPI.shared.seasons(seriesId: seriesId, libraryId: libraryId, missing: missingEpisodes)
+                response = try await SiloAPI.shared.seasons(seriesId: seriesId, libraryId: libraryId, missing: missing)
             }
             guard !Task.isCancelled, generation == seasonsLoadGeneration else { return }
-            ResponseCache.shared.set(response, for: CacheKey.itemSeasons(seriesId, libraryId: libraryId, missing: missingEpisodes))
+            ResponseCache.shared.set(response, for: CacheKey.itemSeasons(seriesId, libraryId: libraryId, missing: missing))
             seasons = response.seasons.sortedForDisplay()
             seasonsLoadState = .loaded
             if seasons.isEmpty, selectionGeneration == episodeLoadGeneration,

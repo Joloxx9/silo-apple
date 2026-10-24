@@ -170,10 +170,12 @@ extension ItemDetailViewModel {
     }
 
     private func seasonTranslationFetch(seriesId: String, seasonNumber: Int) -> @MainActor () async -> TranslatedEpisodesRead? {
-        { [weak self, libraryId] in
+        // The re-read keeps the page's missing episodes; a scope change while
+        // it runs moves the read generation, so publishing refuses it.
+        { [weak self, libraryId, missingEpisodes] in
             guard let generation = self?.episodeReadGeneration,
                   let response = try? await SiloAPI.shared.episodes(
-                      seriesId: seriesId, seasonNumber: seasonNumber, libraryId: libraryId
+                      seriesId: seriesId, seasonNumber: seasonNumber, libraryId: libraryId, missing: missingEpisodes
                   ) else { return nil }
             return TranslatedEpisodesRead(response: response, generation: generation)
         }
