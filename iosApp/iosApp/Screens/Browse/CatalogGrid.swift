@@ -60,6 +60,7 @@ struct CatalogGrid: View {
 
     var body: some View {
         let widthOverride = cardWidthOverride
+        let columns = columns
         LazyVGrid(columns: columns, spacing: rowSpacing) {
             if items.isEmpty && isLoading {
                 // First page still loading: the grid's own shape, unfilled.
@@ -67,7 +68,8 @@ struct CatalogGrid: View {
                     PosterSkeletonCard()
                 }
             }
-            ForEach(items) { item in
+            ForEach(IndexedItems(items: items)) { entry in
+                let item = entry.item
                 // Search can return episodes: caption them with the series
                 // name and "S01E02 · Pilot", as on Home.
                 MediaCard(
@@ -87,7 +89,8 @@ struct CatalogGrid: View {
                     seriesContext: SeriesDetailContext(item: SectionItem(browseItem: item)),
                     aspect: item.isAudiobook ? .square : .poster,
                     cardWidthOverride: widthOverride,
-                    episodeAccessibilityLabel: EpisodeCardCaption.accessibilityLabel(for: item)
+                    episodeAccessibilityLabel: EpisodeCardCaption.accessibilityLabel(for: item),
+                    rowTitles: rowTitles(at: entry.index, columnCount: columns.count)
                 )
                 .frame(maxWidth: .infinity)
                 .onAppear {
@@ -128,6 +131,20 @@ struct CatalogGrid: View {
                 backdropURL: item.backdropUrl
             )
         }
+        #else
+        return nil
+        #endif
+    }
+
+    /// Card titles in the grid row holding `index`, so each card sizes its
+    /// title to the row's tallest. Nil on macOS and tvOS, whose cards draw
+    /// one-line titles.
+    private func rowTitles(at index: Int, columnCount: Int) -> [String]? {
+        #if os(iOS)
+        guard columnCount > 0 else { return nil }
+        let rowStart = index - index % columnCount
+        let rowEnd = min(rowStart + columnCount, items.count)
+        return items[rowStart..<rowEnd].map { EpisodeCardCaption.cardTitle(for: $0) }
         #else
         return nil
         #endif
@@ -198,5 +215,23 @@ struct CatalogGrid: View {
         #else
         return nil
         #endif
+    }
+}
+
+/// The grid's items with their positions, without copying the array: a card
+/// finds its row from its position, and stays keyed by its item's ID.
+private struct IndexedItems: RandomAccessCollection {
+    struct Entry: Identifiable {
+        let index: Int
+        let item: BrowseItem
+        var id: String { item.id }
+    }
+
+    let items: [BrowseItem]
+    var startIndex: Int { items.startIndex }
+    var endIndex: Int { items.endIndex }
+
+    subscript(position: Int) -> Entry {
+        Entry(index: position, item: items[position])
     }
 }

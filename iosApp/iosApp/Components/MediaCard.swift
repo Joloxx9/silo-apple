@@ -109,6 +109,11 @@ struct MediaCard: View {
     /// menu commits server-side, with the item's new state. Favorites /
     /// Watchlist grids use it to drop the card from the list in place.
     var onUserStateChanged: ((MediaItemUserState) -> Void)? = nil
+    /// Titles of every card in this card's grid row, this one included.
+    /// The title takes the height of the tallest of them, so a row lines up
+    /// when one title wraps and has no empty second line when none does.
+    /// Nil reserves two lines, for rows that can't be grouped.
+    var rowTitles: [String]? = nil
 
     @State private var personalState = MediaCardPersonalState()
     @EnvironmentObject private var overlayStore: OverlayPrefsStore
@@ -372,22 +377,42 @@ struct MediaCard: View {
         )
     }
 
+    @ViewBuilder
     private var titleText: some View {
-        Text(title)
-            .font(.siloCardTitle)
-            .foregroundColor(.siloOnSurface)
-            #if os(macOS)
-            // One truncated line, like Home's feed cards. Reserving a second
-            // line left a gap between most titles and their year, and made
-            // these rows taller than Home's.
+        #if os(macOS)
+        // One truncated line, like Home's feed cards. Reserving a second
+        // line left a gap between most titles and their year, and made
+        // these rows taller than Home's.
+        titleLabel(title)
             .lineLimit(1)
             .truncationMode(.tail)
-            #else
+        #else
+        if let rowTitles {
+            // Hidden copies of the row's titles, wrapped at this card's
+            // width, size the title to the row's tallest.
+            ZStack(alignment: .topLeading) {
+                ForEach(Array(rowTitles.enumerated()), id: \.offset) { _, rowTitle in
+                    titleLabel(rowTitle)
+                        .lineLimit(2)
+                        .hidden()
+                }
+                titleLabel(title)
+                    .lineLimit(2)
+            }
+        } else {
             // Reserve 2 lines of space so single- and multi-line titles
             // produce the same overall card height — keeps posters in a
             // row top-aligned when titles wrap.
-            .lineLimit(2, reservesSpace: true)
-            #endif
+            titleLabel(title)
+                .lineLimit(2, reservesSpace: true)
+        }
+        #endif
+    }
+
+    private func titleLabel(_ text: String) -> some View {
+        Text(text)
+            .font(.siloCardTitle)
+            .foregroundColor(.siloOnSurface)
     }
 
     @ViewBuilder
