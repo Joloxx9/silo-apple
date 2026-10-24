@@ -30,8 +30,10 @@ final class MissingSeasonRequests {
             return
         }
         // A failed read keeps what the page showed; the next load asks again.
+        // The page's task is cancelled when what it loads for changes, so a
+        // cancelled load publishes nothing.
         guard let status = try? await api.requestsStatus(),
-              currentGeneration == generation else { return }
+              !Task.isCancelled, currentGeneration == generation else { return }
         // A download server that cannot fetch single seasons would add the
         // whole series again, so the server says whether to offer them.
         guard status.isAvailable == true, status.seriesServerConnected == true,
@@ -40,7 +42,7 @@ final class MissingSeasonRequests {
             return
         }
         guard let media = try? await api.requestsDetail(mediaType: .series, tmdbId: tmdbId),
-              currentGeneration == generation else { return }
+              !Task.isCancelled, currentGeneration == generation else { return }
         self.media = media
         requestedSeasons = Set((media.seasons ?? []).filter(\.requested).map(\.seasonNumber))
         canRequest = true
