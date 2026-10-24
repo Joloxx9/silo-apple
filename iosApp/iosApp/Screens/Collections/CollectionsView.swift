@@ -582,7 +582,9 @@ struct LibraryCollectionsView: View {
             LazyVGrid(columns: columns, spacing: 16) {
                 ForEach(section.collections) { collection in
                     // Through the router, not NavigationLink(value:), so the
-                    // Mac sidebar's route mirror sees the push.
+                    // router's record of pushed routes stays in step with the
+                    // stack: the Mac sidebar highlights from it, and closing
+                    // Requests screens reads it.
                     Button {
                         router.navigate(to: .libraryCollection(
                             libraryId: libraryId,
