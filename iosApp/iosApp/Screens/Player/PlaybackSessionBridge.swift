@@ -989,6 +989,15 @@ actor PlaybackSessionBridge {
             guard explicitFFmpegIndex >= 0 else {
                 return InitialProtocolV3SubtitleIntent(ffmpegStreamIndex: nil, combinedIndex: nil)
             }
+            if let externalOrdinal = ApplePlaybackV3PlanAdapter.serverCombinedSubtitleIndex(
+                externalSelectionIndex: explicitFFmpegIndex,
+                in: version
+            ) {
+                return InitialProtocolV3SubtitleIntent(
+                    ffmpegStreamIndex: nil,
+                    combinedIndex: externalOrdinal
+                )
+            }
             return InitialProtocolV3SubtitleIntent(
                 ffmpegStreamIndex: explicitFFmpegIndex,
                 combinedIndex: ApplePlaybackV3PlanAdapter.serverCombinedSubtitleIndex(

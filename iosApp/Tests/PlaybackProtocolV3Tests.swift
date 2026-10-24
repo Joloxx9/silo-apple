@@ -389,6 +389,34 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         XCTAssertEqual(intent.ffmpegStreamIndex, 4)
     }
 
+    /// A sidecar picked on the item card arrives as the catalog's synthetic
+    /// `index` for it (numbered after the file's streams), not as a stream
+    /// index. The start must ask for that sidecar's combined ordinal, or the
+    /// server plans subtitles Off. Embedded picks keep their own mapping.
+    func testInitialIntentMapsAnExternalCardPickToItsCombinedOrdinal() {
+        let version = makeVersion(container: "mkv", videoCodec: "h264", audioCodec: "aac", subtitleTracks: [
+            makeSubtitle(index: 2, codec: "subrip", external: false, path: nil),
+            makeSubtitle(index: 3, codec: "subrip", external: false, path: nil),
+            makeSubtitle(index: 4, codec: "srt", external: true, path: "/m/Movie.pl.srt", language: "pl"),
+            makeSubtitle(index: 5, codec: "ass", external: true, path: "/m/Movie.de.ass", language: "de"),
+        ])
+        func intent(_ explicitFFmpegIndex: Int) -> PlaybackSessionBridge.InitialProtocolV3SubtitleIntent {
+            PlaybackSessionBridge.initialProtocolV3SubtitleIntent(
+                version: version, explicitFFmpegIndex: explicitFFmpegIndex, explicitCombinedIndex: nil,
+                preferredLanguage: "en", mode: .auto, showForced: false,
+                trackSignature: nil, currentAudioLanguage: "en"
+            )
+        }
+
+        XCTAssertEqual(intent(4).combinedIndex, 0)
+        XCTAssertNil(intent(4).ffmpegStreamIndex, "a sidecar has no stream to select")
+        XCTAssertEqual(intent(5).combinedIndex, 1)
+        XCTAssertEqual(intent(2).combinedIndex, 2, "embedded tracks follow the externals")
+        XCTAssertEqual(intent(2).ffmpegStreamIndex, 2)
+        XCTAssertEqual(intent(3).combinedIndex, 3)
+        XCTAssertNil(intent(9).combinedIndex, "an index no row carries selects nothing")
+    }
+
     func testStartAudioLanguageFallsBackToTheServersEffectiveLanguage() {
         let unlabelled = makeVersion(
             container: "mkv", videoCodec: "h264", audioCodec: "aac",

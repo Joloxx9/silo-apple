@@ -1082,7 +1082,10 @@ struct SubtitleTrack: Codable, Identifiable, Hashable {
     /// The FFmpeg stream index the detail selector and player use to select
     /// this track. The server emits `index,omitempty`, so an embedded track at
     /// stream 0 arrives with no `index`; embedded is the only case where nil
-    /// means 0. External sidecars have no stream index and stay nil.
+    /// means 0. External sidecars have no stream; the catalog numbers them
+    /// after the file's streams, and one without an index stays nil. Map an
+    /// external row through `ApplePlaybackV3PlanAdapter` before using it as
+    /// a stream index.
     var selectionIndex: Int? {
         if let index { return index }
         return external == true ? nil : 0

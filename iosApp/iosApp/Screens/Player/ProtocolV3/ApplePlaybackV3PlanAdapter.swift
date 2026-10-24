@@ -396,6 +396,26 @@ enum ApplePlaybackV3PlanAdapter {
         return embeddedInventory[embeddedOrdinal].combinedIndex
     }
 
+    /// The combined ordinal of the external row a detail selector picked.
+    ///
+    /// The catalog gives each external track a synthetic `index` numbered
+    /// after the file's streams, and the detail selectors pass it on as if it
+    /// were an FFmpeg stream index. No embedded track carries it, so the
+    /// embedded mapping finds nothing and the start asks for no subtitle,
+    /// which the server plans as Off. Externals open the combined space in
+    /// catalog order, so the row's position among them is its ordinal. An
+    /// embedded track with the same index wins: that index is a real stream.
+    static func serverCombinedSubtitleIndex(
+        externalSelectionIndex index: Int,
+        in version: FileVersion
+    ) -> Int? {
+        guard index >= 0, embeddedSubtitleOrdinal(ffmpegStreamIndex: index, in: version) == nil else {
+            return nil
+        }
+        let external = (version.subtitleTracks ?? []).filter { $0.external == true }
+        return external.firstIndex { $0.selectionIndex == index }
+    }
+
     static func serverCombinedSubtitleIndex(
         for playerTrack: PlayerTrack,
         in version: FileVersion
