@@ -387,9 +387,6 @@ struct PhoneDetailHero<Actions: View, BelowOverview: View>: View {
     #endif
     /// Rating scores follow Dynamic Type from their 15pt default.
     @ScaledMetric(relativeTo: .subheadline) private var ratingSize: CGFloat = 15
-    /// How much larger than default the overview text is drawn; the "MORE"
-    /// estimate fits fewer characters into three lines as text grows.
-    @ScaledMetric(relativeTo: .subheadline) private var overviewTextScale: CGFloat = 1
     @State private var availableWidth: CGFloat = 0
     @State private var showFullOverview = false
     @ObservedObject private var advisoryAgePreference = AdvisoryAgePreferenceStore.shared
@@ -932,24 +929,7 @@ struct PhoneDetailHero<Actions: View, BelowOverview: View>: View {
     @ViewBuilder
     private var overviewBlock: some View {
         if let overview, !overview.isEmpty {
-            Text(overview)
-                .siloScaledFont(size: 15, relativeTo: .subheadline)
-                .foregroundStyle(Color.siloOnSurface.opacity(0.80))
-                .lineSpacing(3)
-                .lineLimit(showFullOverview ? nil : 3)
-                .multilineTextAlignment(.leading)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .overlay(alignment: .bottomTrailing) {
-                    if !showFullOverview, isOverviewClipped {
-                        morePill
-                    }
-                }
-                .contentShape(Rectangle())
-                .onTapGesture {
-                    withAnimation(.easeInOut(duration: SiloTheme.normalDuration)) {
-                        showFullOverview.toggle()
-                    }
-                }
+            PhoneDetailOverview(text: overview, isExpanded: $showFullOverview)
         }
     }
 
@@ -963,11 +943,111 @@ struct PhoneDetailHero<Actions: View, BelowOverview: View>: View {
                 .frame(maxWidth: .infinity, alignment: alignment)
         }
     }
+}
+
+// MARK: - Overview
+
+/// The overview, cut to three lines until tapped. When the text runs past
+/// three lines, the end of the last visible line fades out before a MORE pill,
+/// as the App Store does, so the pill never sits on top of words. Truncation
+/// is measured against an unclipped copy at the same width, so the pill shows
+/// only when text is actually hidden, at any Dynamic Type size.
+private struct PhoneDetailOverview: View {
+    let text: String
+    @Binding var isExpanded: Bool
+
+    private static let collapsedLineLimit = 3
+    private static let lineSpacing: CGFloat = 3
+    private static let pillGap: CGFloat = 4
+
+    @ScaledMetric(relativeTo: .subheadline) private var fadeWidth: CGFloat = 32
+    @State private var collapsedHeight: CGFloat = 0
+    @State private var fullHeight: CGFloat = 0
+    @State private var pillWidth: CGFloat = 0
+
+    var body: some View {
+        styledText
+            .lineLimit(isExpanded ? nil : Self.collapsedLineLimit)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .onGeometryChange(for: CGFloat.self) { proxy in
+                proxy.size.height
+            } action: { height in
+                collapsedHeight = height
+            }
+            .background {
+                styledText
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .onGeometryChange(for: CGFloat.self) { proxy in
+                        proxy.size.height
+                    } action: { height in
+                        fullHeight = height
+                    }
+                    .hidden()
+            }
+            .mask { visibleTextMask }
+            .overlay(alignment: .bottomTrailing) {
+                if isTruncated {
+                    morePill
+                        .onGeometryChange(for: CGFloat.self) { proxy in
+                            proxy.size.width
+                        } action: { width in
+                            pillWidth = width
+                        }
+                        .frame(height: lastLineHeight)
+                }
+            }
+            .contentShape(Rectangle())
+            .onTapGesture {
+                withAnimation(.easeInOut(duration: SiloTheme.normalDuration)) {
+                    isExpanded.toggle()
+                }
+            }
+    }
+
+    private var styledText: some View {
+        Text(text)
+            .siloScaledFont(size: 15, relativeTo: .subheadline)
+            .foregroundStyle(Color.siloOnSurface.opacity(0.80))
+            .lineSpacing(Self.lineSpacing)
+            .multilineTextAlignment(.leading)
+    }
+
+    private var isTruncated: Bool {
+        !isExpanded && fullHeight > collapsedHeight + 1
+    }
+
+    /// Height of one line of the collapsed text, without the spacing between lines.
+    private var lastLineHeight: CGFloat {
+        let lines = CGFloat(Self.collapsedLineLimit)
+        return max((collapsedHeight - Self.lineSpacing * (lines - 1)) / lines, 0)
+    }
+
+    /// Opaque over the text, except for the end of the last line, which fades
+    /// out and leaves clear space for the pill.
+    @ViewBuilder
+    private var visibleTextMask: some View {
+        if isTruncated {
+            VStack(spacing: 0) {
+                Color.black
+                HStack(spacing: 0) {
+                    Color.black
+                    LinearGradient(colors: [.black, .clear], startPoint: .leading, endPoint: .trailing)
+                        .frame(width: fadeWidth)
+                    Color.clear
+                        .frame(width: pillWidth + Self.pillGap)
+                }
+                .frame(height: lastLineHeight + Self.lineSpacing / 2)
+            }
+        } else {
+            Color.black
+        }
+    }
 
     private var morePill: some View {
         Button {
             withAnimation(.easeInOut(duration: SiloTheme.normalDuration)) {
-                showFullOverview = true
+                isExpanded = true
             }
         } label: {
             Text("MORE")
@@ -979,11 +1059,6 @@ struct PhoneDetailHero<Actions: View, BelowOverview: View>: View {
                 .background(Capsule().fill(Color.black.opacity(0.54)))
         }
         .buttonStyle(.plain)
-    }
-
-    /// About 140 characters fill three lines at the default text size.
-    private var isOverviewClipped: Bool {
-        CGFloat(overview?.count ?? 0) > 140 / max(overviewTextScale, 1)
     }
 }
 
