@@ -886,8 +886,7 @@ private struct ItemDetailPhoneContent: View {
                         prefKey: prefKey(for: nextUpWatchDetail),
                         version: effectiveVersion(for: nextUpWatchDetail, versionFileId: preferredNextUpFileId),
                         requested: index,
-                        sanitized: preferredNextUpSubtitleTrackIndex,
-                        showForced: nextUpWatchDetail?.effectiveShowForcedSubtitles
+                        sanitized: preferredNextUpSubtitleTrackIndex
                     )
                 },
                 onToggleFavorite: { Task { await viewModel.toggleFavorite() } },
@@ -987,8 +986,7 @@ private struct ItemDetailPhoneContent: View {
                         prefKey: prefKey(for: detail),
                         version: effectiveVersion(for: detail, versionFileId: preferredVersionFileId),
                         requested: index,
-                        sanitized: preferredSubtitleTrackIndex,
-                        showForced: nil
+                        sanitized: preferredSubtitleTrackIndex
                     )
                 },
                 onToggleFavorite: { Task { await viewModel.toggleFavorite() } },
@@ -1205,8 +1203,7 @@ private struct ItemDetailPhoneContent: View {
         prefKey: String?,
         version: FileVersion?,
         requested: Int?,
-        sanitized: Int?,
-        showForced: Bool?
+        sanitized: Int?
     ) {
         guard let prefKey else { return }
         guard let requested else {
@@ -1214,11 +1211,7 @@ private struct ItemDetailPhoneContent: View {
             return
         }
         guard requested == sanitized, let version,
-              let request = TrackSelectionPersistence.subtitleRequest(
-                  version: version,
-                  ffIndex: requested,
-                  showForced: showForced
-              )
+              let request = TrackSelectionPersistence.subtitleRequest(version: version, ffIndex: requested)
         else { return }
         TrackSelectionPersistence.saveSubtitle(prefKey: prefKey, request: request)
     }
