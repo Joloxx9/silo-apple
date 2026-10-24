@@ -64,6 +64,9 @@ enum APIv2CatalogRead {
         let studios: [String]?
         let subtitles: [SubtitleInfo]
         let tagline: String?
+        /// The server-resolved local theme set (inheritance already applied);
+        /// absent when the server's optional theme lookup fails.
+        let themes: ThemeSongSet?
         let title: String
         let tmdbId: String?
         let tvdbId: String?

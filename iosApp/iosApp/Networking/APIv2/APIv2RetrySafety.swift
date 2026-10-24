@@ -101,6 +101,8 @@ enum APIv2MutationCatalog {
         // Catalog and home
         .init("POST", "/api/v2/catalog/query", .naturalIdempotent),
         .init("PUT", "/api/v2/home/dismissals/{surface}/{item_id}", .naturalIdempotent),
+        // A replayed theme grant only issues another short-lived URL.
+        .init("POST", "/api/v2/catalog/items/{id}/themes/{theme_id}/playback", .naturalIdempotent),
         // Playback
         .init("POST", "/api/v2/playback/start", .domainIdentity),
         .init("POST", "/api/v2/playback/{session_id}/progress", .domainIdentity),

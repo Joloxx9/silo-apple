@@ -330,7 +330,7 @@ struct IOSSettingsOverview: View {
     }
 
     private var matchesInterface: Bool {
-        matches("interface", "appearance", "navigation", "menu", "cards", "posters", "captions")
+        matches("interface", "appearance", "navigation", "menu", "cards", "posters", "captions", "theme music", "theme song")
     }
 
     private var matchesGeneral: Bool {

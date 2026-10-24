@@ -391,6 +391,9 @@ private struct ItemDetailPhoneContent: View {
     }
 
     @State private var viewModel: ItemDetailViewModel
+    /// Season and episode routes resolve to their series, so this is the
+    /// page theme music looks up the selected season's own set on.
+    private var isSeriesPage: Bool { viewModel.detail.map { SiloMediaType.isSeries($0.type) } ?? false }
     @State private var preferredVersionFileId: Int?
     @State private var preferredAudioTrackIndex: Int?
     @State private var preferredSubtitleTrackIndex: Int?
@@ -476,6 +479,15 @@ private struct ItemDetailPhoneContent: View {
         .siloNavigationTitleDisplayMode(.inline)
         .siloNavigationBarBackgroundHidden()
         .descriptionTranslation(viewModel)
+        .themeMusic(
+            viewModel.detail?.themes,
+            seasonContentId: isSeriesPage ? viewModel.selectedSeason?.contentId : nil,
+            // A series page waits for its seasons, so a season that owns a
+            // theme never opens on a burst of the series' one.
+            isLoading: viewModel.detail == nil
+                || (isSeriesPage && viewModel.seasons.isEmpty
+                    && viewModel.isLoadingSeriesHierarchy)
+        )
         .task(id: contentId) {
             // Returning from the player restarts this task. Keep the episode
             // and season the page was showing instead of the entry context.

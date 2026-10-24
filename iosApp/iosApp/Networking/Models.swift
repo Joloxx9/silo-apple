@@ -533,6 +533,11 @@ struct ItemDetail: Codable {
     /// translated by AI. `var` with a default for the same memberwise-
     /// initializer reason as `videos`.
     var machineTranslatedFields: [String]? = nil
+    /// Local theme audio for this page, resolved by the server: a season
+    /// without themes carries its series' set, an episode its season's, then
+    /// its series'. `var` with a default for the same memberwise-initializer
+    /// reason as `videos`.
+    var themes: ThemeSongSet? = nil
 }
 
 extension ItemDetail {

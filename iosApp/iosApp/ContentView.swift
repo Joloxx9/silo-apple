@@ -447,6 +447,7 @@ struct ContentView: View {
                 // Nothing below reads title art, and surfaces show its cached
                 // answer meanwhile, so it need not hold up overlay hydration.
                 Task { await TitleArtPreferences.shared.refresh() }
+                Task { await ThemeMusicPreferences.shared.refresh() }
                 await uiCustomization.refresh()
                 await SeekIntervalPreferences.shared.refresh()
                 await EpisodeSpoilerPreferences.shared.refresh()
@@ -476,6 +477,7 @@ struct ContentView: View {
             #endif
             if router.authState == .authenticated {
                 Task { await TitleArtPreferences.shared.refresh() }
+                Task { await ThemeMusicPreferences.shared.refresh() }
                 await uiCustomization.refresh()
                 await SeekIntervalPreferences.shared.refresh()
                 await EpisodeSpoilerPreferences.shared.refresh()
@@ -613,7 +615,9 @@ struct ContentView: View {
         async let seek: Void = SeekIntervalPreferences.shared.refresh()
         async let titleArt: Void = TitleArtPreferences.shared.refresh()
         async let spoilers: Void = EpisodeSpoilerPreferences.shared.refresh()
-        _ = await (overlay, ai, imageSize, requests, shuffle, subtitles, profile, customization, seek, titleArt, spoilers)
+        async let themeMusic: Void = ThemeMusicPreferences.shared.refresh()
+        _ = await (overlay, ai, imageSize, requests, shuffle, subtitles, profile, customization, seek, titleArt, spoilers,
+                   themeMusic)
     }
 
     @MainActor

@@ -19,7 +19,13 @@ and `bandwidth_probe_max_age_seconds` schedule fields, and the buffering_quality
 playback_plan_summary_v1 and connection_speed_v1 features). Its index.json entry is
 unchanged.
 
-Vendored from the server, 64 files: the SELECTED bodies in the script,
+Newer files: the five theme_songs_*.json bodies and their index.json entries
+are read with git show from server main at
+087aaf2c173558daf3dd739253f443ac581781e5 (087aaf2c1, local theme songs from
+silo-server#1344), after the commit above. The next run of the script
+vendors every file from one commit and drops this note.
+
+Vendored from the server, 69 files: the SELECTED bodies in the script,
 index.json filtered to those entries, and fixtures.schema.json.
   fixtures.schema.json
   index.json
@@ -81,6 +87,11 @@ index.json filtered to those entries, and fixtures.schema.json.
   subtitle_ai_quota.json
   subtitles_search_partial.json
   subtitles_stored.json
+  theme_songs_capability.json
+  theme_songs_playback.json
+  theme_songs_playback_converted.json
+  theme_songs_playback_not_acceptable.json
+  theme_songs_playback_unauthorized.json
   update_profile_null_not_clearable.json
   update_profile_ok.json
   user_libraries.json

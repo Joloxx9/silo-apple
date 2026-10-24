@@ -134,6 +134,7 @@ func offsetPrimaryMenuEditorItem(
 struct InterfaceCustomizationView: View {
     @State private var preferences = UICustomizationPreferences.shared
     @State private var titleArt = TitleArtPreferences.shared
+    @State private var themeMusic = ThemeMusicPreferences.shared
     @State private var registry = ServerRegistry.shared
     @State private var librarySnapshot = MainTabLibrarySnapshot.cachedForCurrentAuthority()
     @Environment(\.scenePhase) private var scenePhase
@@ -146,6 +147,10 @@ struct InterfaceCustomizationView: View {
         List {
             if titleArt.isOffered {
                 TitleArtSettingsSection(preferences: titleArt)
+            }
+
+            if themeMusic.isOffered {
+                ThemeMusicSettingsSection(preferences: themeMusic)
             }
 
             if let message = preferences.capabilityMessage {
@@ -333,7 +338,8 @@ struct InterfaceCustomizationView: View {
         .task {
             async let preferencesRefresh: Void = preferences.refresh()
             async let titleArtRefresh: Void = titleArt.refresh()
-            _ = await (preferencesRefresh, titleArtRefresh)
+            async let themeMusicRefresh: Void = themeMusic.refresh()
+            _ = await (preferencesRefresh, titleArtRefresh, themeMusicRefresh)
         }
         .task(id: currentLibraryAuthority) {
             await refreshLibraries(for: currentLibraryAuthority)
@@ -344,8 +350,9 @@ struct InterfaceCustomizationView: View {
             Task {
                 async let preferencesRefresh: Void = preferences.refresh()
                 async let titleArtRefresh: Void = titleArt.refresh()
+                async let themeMusicRefresh: Void = themeMusic.refresh()
                 async let librariesRefresh: Void = refreshLibraries(for: authority)
-                _ = await (preferencesRefresh, titleArtRefresh, librariesRefresh)
+                _ = await (preferencesRefresh, titleArtRefresh, themeMusicRefresh, librariesRefresh)
             }
         }
     }
@@ -590,7 +597,7 @@ private struct TitleArtSettingsSection: View {
 
     var body: some View {
         Section {
-            TitleArtToggleRow(
+            TitlePagesToggleRow(
                 title: "Show Title Art",
                 subtitle: "Use logo artwork as the title when available.",
                 systemImage: "photo.artframe",
@@ -599,7 +606,7 @@ private struct TitleArtSettingsSection: View {
                     set: { preferences.setShowTitleArt($0) }
                 )
             )
-            TitleArtToggleRow(
+            TitlePagesToggleRow(
                 title: "Apply to All Devices",
                 subtitle: "Use this choice everywhere on this profile.",
                 systemImage: "laptopcomputer.and.iphone",
@@ -625,15 +632,18 @@ private struct TitleArtSettingsSection: View {
             Text("Title Pages")
         } footer: {
             if preferences.appliesToAllDevices {
-                Text("Turn off Apply to All Devices to choose for this \(Self.deviceNoun) only.")
+                Text("Turn off Apply to All Devices to choose for this \(TitlePagesDevice.noun) only.")
             } else {
-                Text("Only affects this \(Self.deviceNoun). Your other devices keep their own setting.")
+                Text("Only affects this \(TitlePagesDevice.noun). Your other devices keep their own setting.")
             }
         }
         .disabled(!preferences.allowsEditing)
     }
+}
 
-    private static var deviceNoun: String {
+/// What the "this device" footers call the device.
+private enum TitlePagesDevice {
+    static var noun: String {
         switch AppleDeviceIdentity.current.clientFamily {
         case "tablet": return "iPad"
         case "desktop": return "Mac"
@@ -643,9 +653,49 @@ private struct TitleArtSettingsSection: View {
     }
 }
 
+/// "Theme Music": local theme songs on title pages, written as this device's
+/// choice. See `ThemeMusicPreferences`.
+private struct ThemeMusicSettingsSection: View {
+    let preferences: ThemeMusicPreferences
+
+    var body: some View {
+        Section {
+            TitlePagesToggleRow(
+                title: "Play Theme Music",
+                subtitle: "Play a title's theme song from your library while its page is open.",
+                systemImage: "music.note",
+                isOn: Binding(
+                    get: { preferences.playsThemeMusic },
+                    set: { preferences.setEnabled($0) }
+                )
+            )
+            TitlePagesToggleRow(
+                title: "Loop Theme Music",
+                subtitle: "Repeat the theme while the page stays open.",
+                systemImage: "repeat",
+                isOn: Binding(
+                    get: { preferences.loops },
+                    set: { preferences.setLoop($0) }
+                )
+            )
+            .disabled(!preferences.playsThemeMusic)
+            if let message = preferences.errorMessage {
+                Label(message, systemImage: "exclamationmark.triangle")
+                    .font(.footnote)
+                    .foregroundStyle(Color.siloSecondaryText)
+            }
+        } header: {
+            Text("Theme Music")
+        } footer: {
+            Text("Only affects this \(TitlePagesDevice.noun).")
+        }
+        .disabled(!preferences.allowsEditing)
+    }
+}
+
 /// The Settings overview toggle on iPhone and iPad; a plain labeled toggle on
 /// the Mac, which has no overview row style.
-private struct TitleArtToggleRow: View {
+private struct TitlePagesToggleRow: View {
     let title: String
     let subtitle: String
     let systemImage: String

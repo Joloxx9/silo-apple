@@ -8,6 +8,7 @@ import SwiftUI
 struct TVGeneralSettingsPane: View {
     @State private var preferences = UICustomizationPreferences.shared
     @State private var titleArt = TitleArtPreferences.shared
+    @State private var themeMusic = ThemeMusicPreferences.shared
     @State private var launchPreferences = ProfileLaunchPreferences.shared
     @State private var navPrefs = AppNavPreferences.shared
     @State private var activePicker: PickerKind?
@@ -47,6 +48,10 @@ struct TVGeneralSettingsPane: View {
 
             if titleArt.isOffered {
                 titleArtGroup
+            }
+
+            if themeMusic.isOffered {
+                themeMusicGroup
             }
 
             if let message = preferences.capabilityMessage {
@@ -171,7 +176,8 @@ struct TVGeneralSettingsPane: View {
             async let preferencesRefresh: Void = preferences.refresh()
             async let titleArtRefresh: Void = titleArt.refresh()
             async let advisoryRefresh: Void = advisoryAgePreference.refresh()
-            _ = await (preferencesRefresh, titleArtRefresh, advisoryRefresh)
+            async let themeMusicRefresh: Void = themeMusic.refresh()
+            _ = await (preferencesRefresh, titleArtRefresh, advisoryRefresh, themeMusicRefresh)
         }
         .task(id: currentLibraryAuthority) {
             await refreshLibraries(for: currentLibraryAuthority)
@@ -182,8 +188,9 @@ struct TVGeneralSettingsPane: View {
             Task {
                 async let preferencesRefresh: Void = preferences.refresh()
                 async let titleArtRefresh: Void = titleArt.refresh()
+                async let themeMusicRefresh: Void = themeMusic.refresh()
                 async let librariesRefresh: Void = refreshLibraries(for: authority)
-                _ = await (preferencesRefresh, titleArtRefresh, librariesRefresh)
+                _ = await (preferencesRefresh, titleArtRefresh, themeMusicRefresh, librariesRefresh)
             }
         }
     }
@@ -218,6 +225,36 @@ struct TVGeneralSettingsPane: View {
             TVSettingsFooter("Use logo artwork as the title when available. Only affects this Apple TV. Your other devices keep their own setting.")
         }
         if let message = titleArt.errorMessage ?? titleArt.readErrorMessage {
+            TVSettingsFooter(message)
+        }
+    }
+
+    /// Theme music on title pages, written as this Apple TV's choice. See
+    /// `ThemeMusicPreferences`.
+    @ViewBuilder
+    private var themeMusicGroup: some View {
+        TVSettingsSectionHeader("THEME MUSIC")
+
+        TVSettingsToggleRow(
+            title: "Play Theme Music",
+            isOn: themeMusic.playsThemeMusic
+        ) {
+            themeMusic.setEnabled(!themeMusic.playsThemeMusic)
+        }
+        .accessibilityHint("Play a title's theme song from your library while its page is open.")
+        .disabled(!themeMusic.allowsEditing)
+
+        TVSettingsToggleRow(
+            title: "Loop Theme Music",
+            isOn: themeMusic.loops
+        ) {
+            themeMusic.setLoop(!themeMusic.loops)
+        }
+        .accessibilityHint("Repeat the theme while the page stays open.")
+        .disabled(!themeMusic.allowsEditing || !themeMusic.playsThemeMusic)
+
+        TVSettingsFooter("Play a title's theme song from your library while its page is open. Only affects this Apple TV.")
+        if let message = themeMusic.errorMessage {
             TVSettingsFooter(message)
         }
     }

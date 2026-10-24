@@ -469,6 +469,42 @@ actor SiloAPI {
         try await apiV2Client.moveCollection(version, toGroupId: groupId)
     }
 
+    // --- Theme music ---
+
+    func themeSongsCapability() async throws -> APIv2ThemeSongsCapability {
+        let auth = try await detailReadAuth()
+        let capability = try await apiV2Client.themeSongsCapability(auth: auth)
+        try await requireCurrentOwner(auth)
+        return capability
+    }
+
+    /// A fresh grant for one theme, listing what AVFoundation decodes so the
+    /// server converts the rest. A relative URL is this server's own audio
+    /// route; an absolute one is a proxy's origin and is used as given.
+    func themePlayback(ownerId: String, themeId: String) async throws -> ThemeMusicGrant {
+        let auth = try await detailReadAuth()
+        let formats = AppleDecodeCapabilities.themeAudioFormats.map {
+            APIv2ThemeAudioFormat(container: $0.container, audioCodec: $0.codec)
+        }
+        let wire = try await apiV2Client.themePlayback(ownerId: ownerId, themeId: themeId, accepting: formats, auth: auth)
+        try await requireCurrentOwner(auth)
+        guard let url = Self.themeAudioURL(wire.url, serverURL: await currentServerUrl()) else {
+            throw APIv2Error.unsupportedCatalogReadValue
+        }
+        return ThemeMusicGrant(url: url, isConverted: wire.delivery == "converted")
+    }
+
+    static func themeAudioURL(_ raw: String, serverURL: String) -> URL? {
+        if raw.hasPrefix("/") {
+            var base = serverURL
+            while base.hasSuffix("/") { base.removeLast() }
+            return URL(string: base + raw)
+        }
+        guard let url = URL(string: raw), let scheme = url.scheme?.lowercased(),
+              scheme == "https" || scheme == "http", url.host != nil else { return nil }
+        return url
+    }
+
     // --- Shuffle ---
 
     func shuffleCapability() async throws -> APIv2ShuffleCapability {

@@ -76,6 +76,7 @@ extension ItemDetail {
         self.audiobook = try value.audiobook.map { try AudiobookDetail(catalog: $0) }
         self.pendingTranslationLanguage = value.pendingTranslationLanguage
         self.machineTranslatedFields = value.machineTranslatedFields
+        self.themes = value.themes
         self.videos = value.videos.map { $0.map { ItemVideo(catalog: $0) } }
         self.extras = try value.extras.map { try $0.map { try ItemExtra(catalog: $0) } }
         self.userState = value.userState.map {

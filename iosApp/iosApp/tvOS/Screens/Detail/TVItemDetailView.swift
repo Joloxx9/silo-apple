@@ -17,6 +17,9 @@ struct TVItemDetailView: View {
     let onResolveSeries: ((SeriesDetailContext) -> Void)?
 
     @State private var viewModel: ItemDetailViewModel
+    /// Season and episode routes resolve to their series, so this is the
+    /// page theme music looks up the selected season's own set on.
+    private var isSeriesPage: Bool { viewModel.detail.map { SiloMediaType.isSeries($0.type) } ?? false }
     @State private var hasStartedDetailLoad = false
     /// Set when the user explicitly resets subtitles to "Auto" this visit:
     /// the server override is cleared with a fire-and-forget DELETE, but the
@@ -85,6 +88,15 @@ struct TVItemDetailView: View {
         .siloNavigationTitleDisplayMode(.inline)
         .siloNavigationBarBackgroundHidden()
         .descriptionTranslation(viewModel)
+        .themeMusic(
+            viewModel.detail?.themes,
+            seasonContentId: isSeriesPage ? viewModel.selectedSeason?.contentId : nil,
+            // A series page waits for its seasons, so a season that owns a
+            // theme never opens on a burst of the series' one.
+            isLoading: viewModel.detail == nil
+                || (isSeriesPage && viewModel.seasons.isEmpty
+                    && viewModel.isLoadingSeriesHierarchy)
+        )
         .personalStateNoticeAlert($viewModel.personalStateNotice)
         .onAppear {
             isPageVisible = true
@@ -1073,7 +1085,8 @@ struct TVItemDetailView: View {
             // would disappear the moment enrichment succeeds.
             videos: item.videos,
             extras: item.extras,
-            machineTranslatedFields: item.machineTranslatedFields
+            machineTranslatedFields: item.machineTranslatedFields,
+            themes: item.themes
         )
     }
 }

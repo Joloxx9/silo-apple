@@ -773,6 +773,9 @@ final class AuthService: @unchecked Sendable {
         WatchPartySession.shared.leave(forgetRecent: forgetWatchPartyRecent)
         RequestsFeatureStore.shared.reset()
         ShuffleFeatureStore.shared.reset()
+        // Theme music and its capability belong to the outgoing profile.
+        ThemeMusicCenter.shared.reset()
+        ThemeMusicPreferences.shared.reset()
         CurrentProfileStore.shared.reset()
         SubtitleProvidersStore.shared.reset()
         RequestsEventBus.shared.reset()
