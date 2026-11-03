@@ -74,6 +74,7 @@ struct TVSimilarRail: View {
                         posterUrl: item.posterUrl ?? "",
                         posterThumbhash: item.posterThumbhash,
                         year: item.year,
+                        userState: item.userState,
                         action: { onSelect(item.contentId) },
                         cardWidth: cardWidth,
                         focusTreatment: .ring,
@@ -183,6 +184,8 @@ struct SimilarPosterItem: Identifiable, Hashable {
     let posterUrl: String?
     let posterThumbhash: String?
     let year: Int?
+    /// Drives the poster's watched check.
+    let userState: MediaItemUserState?
     var id: String { contentId }
 
     init(card: BrowseItem) {
@@ -191,6 +194,7 @@ struct SimilarPosterItem: Identifiable, Hashable {
         self.posterUrl = card.posterUrl
         self.posterThumbhash = card.posterThumbhash
         self.year = card.year
+        self.userState = card.userState
     }
 }
 #endif

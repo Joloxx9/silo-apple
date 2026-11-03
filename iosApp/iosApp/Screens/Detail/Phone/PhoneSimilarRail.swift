@@ -171,6 +171,8 @@ struct SimilarPosterItem: Identifiable, Hashable {
     /// Mark for a missing poster when the item's own type is known;
     /// otherwise the rail's `placeholderSymbol` applies.
     let placeholderSymbol: String?
+    /// Draws the watched check; books in the audiobook rails have none.
+    let isPlayed: Bool
     let accessibilityDescription: String
     var id: String { contentId }
 
@@ -182,9 +184,14 @@ struct SimilarPosterItem: Identifiable, Hashable {
         self.year = card.year
         self.subtitle = nil
         self.placeholderSymbol = ArtworkPlaceholderSymbol.forMediaType(card.type)
-        self.accessibilityDescription = [card.title, card.year.map(String.init)]
-            .compactMap { $0 }
-            .joined(separator: ", ")
+        let isPlayed = card.userState?.played == true
+        self.isPlayed = isPlayed
+        self.accessibilityDescription = mediaCardAccessibilityLabel(
+            title: card.title,
+            episodeLabel: nil,
+            year: card.year,
+            isWatched: isPlayed
+        )
     }
 
     init(audiobook item: AudiobookRelatedItem) {
@@ -195,6 +202,7 @@ struct SimilarPosterItem: Identifiable, Hashable {
         self.year = item.year
         self.subtitle = item.seriesIndex.map { "Book \($0)" }
         self.placeholderSymbol = nil
+        self.isPlayed = false
         self.accessibilityDescription = audiobookRelatedItemAccessibilityLabel(item)
     }
 }
@@ -243,6 +251,11 @@ private struct PhonePosterCard: View {
         )
             .frame(width: cardWidth, height: cardHeight)
             .clipped()
+            .overlay {
+                if item.isPlayed {
+                    PosterWatchedCheck()
+                }
+            }
             .clipShape(RoundedRectangle(cornerRadius: SiloTheme.cornerRadius))
     }
 }
