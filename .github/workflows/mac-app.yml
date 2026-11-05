@@ -1,0 +1,84 @@
+name: macOS App Build (personal)
+
+# Builds the SiloMac target unsigned on a GitHub-hosted macOS runner, ad-hoc
+# signs it, and publishes Silo-macOS.zip as an artifact and a prerelease.
+# No Apple Developer account is used, so on first launch macOS Gatekeeper
+# needs: right-click Silo.app > Open, or `xattr -cr /Applications/Silo.app`.
+
+on:
+  push:
+    branches: [mac-build]
+  workflow_dispatch:
+
+concurrency:
+  group: mac-app
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Select newest Xcode
+        run: |
+          XCODE="$(ls -d /Applications/Xcode_*.app | sort -V | tail -1)"
+          echo "Using $XCODE"
+          sudo xcode-select -s "$XCODE"
+          xcodebuild -version
+
+      - name: Install XcodeGen (pinned, checksum-verified)
+        uses: ./.github/actions/install-xcodegen
+
+      - name: Generate Xcode project
+        working-directory: iosApp
+        run: xcodegen generate
+
+      - name: Build SiloMac (Release, unsigned)
+        working-directory: iosApp
+        run: |
+          set -o pipefail
+          xcodebuild build \
+            -project Silo.xcodeproj \
+            -scheme SiloMac \
+            -configuration Release \
+            -destination 'generic/platform=macOS' \
+            -derivedDataPath "$RUNNER_TEMP/dd" \
+            ARCHS=arm64 ONLY_ACTIVE_ARCH=NO \
+            MARKETING_VERSION="1.1.0" \
+            CURRENT_PROJECT_VERSION="${GITHUB_RUN_NUMBER}" \
+            CODE_SIGN_IDENTITY='' CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO \
+            | tee "$RUNNER_TEMP/build.log" | grep -E "error:|warning: .*deprecated|BUILD" || true
+          test "${PIPESTATUS[0]}" -eq 0 || { tail -200 "$RUNNER_TEMP/build.log"; exit 1; }
+
+      - name: Ad-hoc sign and zip
+        run: |
+          APP="$RUNNER_TEMP/dd/Build/Products/Release/Silo.app"
+          test -d "$APP"
+          codesign --force --deep --sign - "$APP"
+          codesign --verify --deep --strict "$APP"
+          mkdir -p out
+          ditto -c -k --keepParent "$APP" out/Silo-macOS.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Silo-macOS
+          path: out/Silo-macOS.zip
+          if-no-files-found: error
+
+      - name: Publish prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="mac-build.${GITHUB_RUN_NUMBER}"
+          gh release create "$TAG" out/Silo-macOS.zip \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --prerelease \
+            --title "Silo for macOS (build ${GITHUB_RUN_NUMBER})" \
+            --notes "Unsigned (ad-hoc) personal build of the SiloMac target. Unzip, move Silo.app to Applications, then run: xattr -cr /Applications/Silo.app"
